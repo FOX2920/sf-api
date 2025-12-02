@@ -15,7 +15,6 @@ from openpyxl.styles import Alignment, Border, Side, Font
 from openpyxl.cell.rich_text import CellRichText, TextBlock
 from openpyxl.cell.text import InlineFont
 from pathlib import Path
-from openpyxl.styles import Alignment
 
 # Load environment variables
 load_dotenv()
@@ -1358,9 +1357,19 @@ async def download_file(file_name: str):
 
 # --- New Helper Functions for PI, PO, Quote ---
 
+def sanitize_filename(name):
+    """
+    Sanitize filename by removing or replacing invalid characters.
+    """
+    if not name:
+        return "Unknown"
+    # Replace invalid characters with underscore
+    return re.sub(r'[<>:"/\\|?*]', '_', str(name))
+
 def expand_table_by_tag(ws, start_tag, end_tag, data):
     """
     Expand a single row table based on start and end tags.
+    Matches logic from test_fill_pi_no_discount.py
     """
     # Find the row containing the tags
     table_row_idx = None
@@ -1489,61 +1498,145 @@ def expand_table_by_tag(ws, start_tag, end_tag, data):
     
     return table_row_idx
 
+def apply_bold_formatting(ws, start_row, data, col_idx, key_name='Product__r'):
+    """
+    Apply bold formatting to product description based on product name.
+    """
+    if not start_row or not data:
+        return
+
+    for i, item in enumerate(data):
+        row_idx = start_row + i
+        cell = ws.cell(row=row_idx, column=col_idx)
+        
+        product_name = None
+        if key_name == 'Product__r':
+            product_name = item.get('Product__r', {}).get('Name')
+        else:
+            product_name = item.get(key_name) # Direct access for Quote/Order items
+
+        current_desc = str(cell.value) if cell.value else ""
+        
+        if product_name and current_desc:
+            match = re.match(r"^([^\d\(]+)", product_name)
+            if match:
+                bold_target = match.group(1).strip()
+                if bold_target and bold_target in current_desc:
+                    start_idx = current_desc.find(bold_target)
+                    if start_idx != -1:
+                        parts = []
+                        if start_idx > 0: parts.append(current_desc[:start_idx])
+                        parts.append(TextBlock(InlineFont(b=True), bold_target))
+                        end_idx = start_idx + len(bold_target)
+                        if end_idx < len(current_desc): parts.append(current_desc[end_idx:])
+                        cell.value = CellRichText(parts)
+
+def merge_identical_cells(ws, start_row, count, col_idx):
+    """
+    Merge identical cells in a column and adjust row heights.
+    """
+    if not start_row or count <= 0:
+        return
+
+    start_merge_row = start_row
+    current_val = str(ws.cell(row=start_merge_row, column=col_idx).value)
+    
+    for i in range(1, count):
+        row_idx = start_row + i
+        cell_val = str(ws.cell(row=row_idx, column=col_idx).value)
+        
+        if cell_val != current_val:
+            if row_idx - 1 > start_merge_row:
+                ws.merge_cells(start_row=start_merge_row, start_column=col_idx, end_row=row_idx-1, end_column=col_idx)
+                ws.cell(row=start_merge_row, column=col_idx).alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+                adjust_row_height_for_merged_cell(ws, start_merge_row, row_idx-1, col_idx, current_val)
+            start_merge_row = row_idx
+            current_val = cell_val
+            
+    # Last block
+    last_row = start_row + count - 1
+    if last_row > start_merge_row:
+        ws.merge_cells(start_row=start_merge_row, start_column=col_idx, end_row=last_row, end_column=col_idx)
+        ws.cell(row=start_merge_row, column=col_idx).alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+        adjust_row_height_for_merged_cell(ws, start_merge_row, last_row, col_idx, current_val)
+
+def adjust_row_height_for_merged_cell(ws, start_row, end_row, col_idx, text):
+    """
+    Helper to adjust row height for merged cells.
+    """
+    val_str = str(text) if text else ""
+    text_len = len(val_str)
+    
+    col_letter = get_column_letter(col_idx)
+    col_width = ws.column_dimensions[col_letter].width
+    if not col_width: col_width = 30
+    
+    chars_per_line = int(col_width * 1.2)
+    if chars_per_line < 10: chars_per_line = 30
+    
+    explicit_lines = val_str.count('\n') + 1
+    wrap_lines = (text_len // chars_per_line) + 1
+    estimated_lines = max(explicit_lines, wrap_lines)
+    
+    if estimated_lines > 1:
+        required_height = estimated_lines * 25
+    else:
+        required_height = 30
+    required_height += 10
+    
+    current_total_height = 0
+    for r in range(start_row, end_row + 1):
+        h = ws.row_dimensions[r].height
+        if h is None: h = 15
+        current_total_height += h
+    
+    if required_height > current_total_height:
+        extra_per_row = (required_height - current_total_height) / (end_row - start_row + 1)
+        for r in range(start_row, end_row + 1):
+            h = ws.row_dimensions[r].height
+            if h is None: h = 15
+            ws.row_dimensions[r].height = h + extra_per_row
+
 # --- PI No Discount Generation ---
 
 def generate_pi_no_discount_file(contract_id: str, template_path: str):
     sf = get_salesforce_connection()
     
-    # Query Contract
-    contract_fields = [
-        "Id", "Name", "CreatedDate", "Port_of_Origin__c", "Port_of_Discharge__c", "Stockyard__c",
-        "Account__r.Name", "Account__r.BillingStreet", "Account__r.BillingCity", 
-        "Account__r.BillingPostalCode", "Account__r.BillingCountry", "Account__r.Phone", 
-        "Account__r.Fax__c", "Account__r.VAT__c",
-        "Export_Route_Carrier__c", "Incoterms__c", "Packing__c", "Shipping_Schedule__c",
-        "Terms_of_Sale__c", "Terms_of_Payment__c", "REMARK_NUMBER_ON_DOCUMENTS__c",
-        "Total_Crates__c", "Total_m3__c", "Total_Tons__c", "Total_Conts__c",
-        "Sub_Total_USD__c", "In_words__c", "Fumigation__c", "Discount__c", 
-        "Discount_Amount__c", "Deposit_Percentage__c", "Deposit__c", "Total_Price_USD__c",
-        "Created_Date__c"
-    ]
+    # Query Contract (Full Query from reference script)
+    contract_query = f"""
+    SELECT Id, IsDeleted, Name, CreatedDate, LastModifiedDate, SystemModstamp, LastActivityDate, LastViewedDate, LastReferencedDate, Cont__c, Container_Weight_Regulations__c, Crates__c, Height__c, Length__c, Line_Number__c, Packing__c, Sales_Price__c, Tons__c, Width__c, List_Price__c, Discount__c, Charge_Unit__c, Quantity__c, m2__c, m3__c, ml__c, Total_Price_USD__c, L_PI__c, W_PI__c, H_PI__c, PCS_PI__c, Crates_PI__c, Created_Date__c, Packing_PI__c, Product_Discription__c, Charge_Unit_PI__c, Actual_Cont__c, Pending_Cont__c, Clear__c, Actual_Crates__c, Actual_m2__c, Actual_m3__c, Actual_ml__c, Actual_Quantity__c, Actual_Tons__c, Actual_Total_Price_USD__c, Pending_Crates__c, Pending_m2__c, Pending_m3__c, Pending_ml__c, Pending_Quantity__c, Pending_Tons__c, Pending_Amount_USD__c, Delivery_Date__c, Delivery_Quantity__c, Is_Delivery_Quantity_Valid__c, Delivery_Quantity_number__c, Unscheduled_Quantity__c, Line_number_For_print__c, Product__r.Id, Product__r.Name, Product__r.ProductCode, Product__r.Description, Product__r.QuantityScheduleType, Product__r.QuantityInstallmentPeriod, Product__r.NumberOfQuantityInstallments, Product__r.RevenueScheduleType, Product__r.RevenueInstallmentPeriod, Product__r.NumberOfRevenueInstallments, Product__r.IsActive, Product__r.CreatedDate, Product__r.CreatedById, Product__r.LastModifiedDate, Product__r.LastModifiedById, Product__r.SystemModstamp, Product__r.Family, Product__r.ExternalDataSourceId, Product__r.ExternalId, Product__r.DisplayUrl, Product__r.QuantityUnitOfMeasure, Product__r.IsDeleted, Product__r.IsArchived, Product__r.LastViewedDate, Product__r.LastReferencedDate, Product__r.StockKeepingUnit, Product__r.Product_description_in_Vietnamese__c, Product__r.specific_gravity__c, Product__r.Bottom_cladding_coefficient__c, Product__r.STONE_Color_Type__c, Product__r.Packing__c, Product__r.Long__c, Product__r.High__c, Product__r.Width__c, Product__r.Long_special__c, Product__r.High_special__c, Product__r.Image__c, Product__r.Charge_Unit__c, Product__r.Width_special__c, Product__r.STONE_Class__c, Product__r.Description__c, Product__r.List_Price__c, Product__r.Weight_per_unit__c, Product__r.Edge_Finish__c, Product__r.Suppliers__c, Product__r.m_per_unit__c, Product__r.Application__c, Product__r.Surface_Finish__c, Product__r.m3_per_unit__c, Product__r.Pricing_Method__c, Contract__r.Id, Contract__r.OwnerId, Contract__r.IsDeleted, Contract__r.Name, Contract__r.CreatedDate, Contract__r.CreatedById, Contract__r.LastModifiedDate, Contract__r.LastModifiedById, Contract__r.SystemModstamp, Contract__r.LastActivityDate, Contract__r.LastViewedDate, Contract__r.LastReferencedDate, Contract__r.Account__c, Contract__r.Quote__c, Contract__r.Bill_To__c, Contract__r.Bill_To_Name__c, Contract__r.Contact_Name__c, Contract__r.Expiration_Date__c, Contract__r.Export_Route_Carrier__c, Contract__r.Fax__c, Contract__r.Phone__c, Contract__r.Fumigation__c, Contract__r.Incoterms__c, Contract__r.In_words__c, Contract__r.Packing__c, Contract__r.Port_of_Discharge__c, Contract__r.REMARK_NUMBER_ON_DOCUMENTS__c, Contract__r.Shipping_Schedule__c, Contract__r.Total_Conts__c, Contract__r.Total_Crates__c, Contract__r.Total_m3__c, Contract__r.Sub_Total_USD__c, Contract__r.Total_Tons__c, Contract__r.Deposit_Percentage__c, Contract__r.Discount__c, Contract__r.Total_Price_USD__c, Contract__r.Deposit__c, Contract__r.Stage__c, Contract__r.Total_Payment_Received__c, Contract__r.Expected_ETD__c, Contract__r.Port_of_Origin__c, Contract__r.Price_Book__c, Contract__r.Stockyard__c, Contract__r.Created_Date__c, Contract__r.Total_Contract_Product__c, Contract__r.Pending_Products__c, Contract__r.Total_Payment_Received_USD__c, Contract__r.Production_Order_Number__c, Contract__r.Total_m2__c, Contract__r.Total_Pcs__c, Contract__r.Total_Pcs_PO__c, Contract__r.Planned_Shipments__c, Contract__r.Is_approved__c, Contract__r.Deposited_amount_USD__c, Contract__r.Design_confirmed__c, Contract__r.Contract_type__c, Contract__r.Fully_deposited__c, Contract__r.Discount_Amount__c, Contract__r.Terms_of_Payment__c, Contract__r.Terms_of_Sale__c, Contract__r.Total_surcharge__c FROM Contract_Product__c where Contract__r.Id = '{contract_id}' ORDER BY Line_Number__c ASC
+    """
     
-    query = f"SELECT {', '.join(contract_fields)} FROM Contract__c WHERE Id = '{contract_id}'"
     try:
-        result = sf.query(query)
+        result = sf.query_all(contract_query)
     except Exception as e:
-        # Fallback query if some fields don't exist
         print(f"Error querying contract: {e}")
         raise ValueError(f"Error querying contract: {e}")
 
     if not result['records']:
-        raise ValueError(f"No contract found with ID: {contract_id}")
+        raise ValueError(f"No contract items found for ID: {contract_id}")
 
-    contract = result['records'][0]
+    contract_items = result['records']
+    first_item = contract_items[0]
+    if 'Contract__r' in first_item and first_item['Contract__r']:
+        contract = first_item['Contract__r']
+    else:
+        raise ValueError("Contract data missing in line items.")
     
-    # Flatten Account__r fields
-    if contract.get('Account__r'):
-        for k, v in contract['Account__r'].items():
-            contract[f'Account__r.{k}'] = v
-            
+    # Flatten Data
     full_data = {}
     for k, v in contract.items():
         full_data[f"Contract__c.{k}"] = v
         
-    # Query Products
-    product_fields = [
-        "Line_number_For_print__c", "Product_Discription__c", "L_PI__c", "W_PI__c", "H_PI__c",
-        "PCS_PI__c", "m2__c", "Crates_PI__c", "m3__c", "Tons__c", "Cont__c",
-        "Sales_Price__c", "Charge_Unit__c", "Total_Price_USD__c", "Packing_PI__c",
-        "Product__r.Name"
-    ]
-    prod_query = f"SELECT {', '.join(product_fields)} FROM Contract_Product__c WHERE Contract__r.Id = '{contract_id}' ORDER BY Line_Number__c ASC"
-    try:
-        prod_result = sf.query_all(prod_query)
-        contract_items = prod_result['records']
-    except Exception as e:
-        print(f"Error querying products: {e}")
-        contract_items = []
+    # Fetch Account
+    account_id = contract.get('Account__c')
+    if account_id:
+        acc_fields = ["Name", "BillingStreet", "BillingCity", "BillingPostalCode", "BillingCountry", "Phone", "Fax__c", "VAT__c"]
+        try:
+            acc = sf.Account.get(account_id)
+            for k in acc_fields:
+                full_data[f"Contract__c.Account__r.{k}"] = acc.get(k)
+        except: pass
 
     # Inject Sequential Number
     for idx, item in enumerate(contract_items):
@@ -1632,54 +1725,49 @@ def generate_pi_no_discount_file(contract_id: str, template_path: str):
     # Fill Product Table
     table_start_row = expand_table_by_tag(ws, "{{TableStart:ContractProduct2}}", "{{TableEnd:ContractProduct2}}", contract_items)
     
-    # Bold Logic & Merging (Simplified from script)
     if table_start_row and contract_items:
-        col_b_idx = 2
-        for i, item in enumerate(contract_items):
-            row_idx = table_start_row + i
-            cell = ws.cell(row=row_idx, column=col_b_idx)
-            product_name = item.get('Product__r', {}).get('Name')
-            current_desc = str(cell.value) if cell.value else ""
-            
-            if product_name and current_desc:
-                match = re.match(r"^([^\d\(]+)", product_name)
-                if match:
-                    bold_target = match.group(1).strip()
-                    if bold_target and bold_target in current_desc:
-                        start_idx = current_desc.find(bold_target)
-                        if start_idx != -1:
-                            parts = []
-                            if start_idx > 0: parts.append(current_desc[:start_idx])
-                            parts.append(TextBlock(InlineFont(b=True), bold_target))
-                            end_idx = start_idx + len(bold_target)
-                            if end_idx < len(current_desc): parts.append(current_desc[end_idx:])
-                            cell.value = CellRichText(parts)
+        # Apply Bold Formatting
+        apply_bold_formatting(ws, table_start_row, contract_items, 2, 'Product__r')
+        
+        # Merge Identical Cells
+        merge_identical_cells(ws, table_start_row, len(contract_items), 2)
 
-        # Merge identical cells
-        start_merge_row = table_start_row
-        current_val = str(ws.cell(row=start_merge_row, column=col_b_idx).value)
-        for i in range(1, len(contract_items)):
+        # Format Price Columns (L=12, M=13)
+        for i in range(len(contract_items)):
             row_idx = table_start_row + i
-            cell_val = str(ws.cell(row=row_idx, column=col_b_idx).value)
-            if cell_val != current_val:
-                if row_idx - 1 > start_merge_row:
-                    ws.merge_cells(start_row=start_merge_row, start_column=col_b_idx, end_row=row_idx-1, end_column=col_b_idx)
-                    ws.cell(row=start_merge_row, column=col_b_idx).alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
-                start_merge_row = row_idx
-                current_val = cell_val
-        # Last block
-        last_row = table_start_row + len(contract_items) - 1
-        if last_row > start_merge_row:
-            ws.merge_cells(start_row=start_merge_row, start_column=col_b_idx, end_row=last_row, end_column=col_b_idx)
-            ws.cell(row=start_merge_row, column=col_b_idx).alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+            # Unit Price
+            cell = ws.cell(row=row_idx, column=12)
+            if cell.value:
+                try:
+                    val_str = str(cell.value).replace(',', '')
+                    cell.value = float(val_str)
+                    cell.number_format = '#,##0.00 "USD"'
+                except: pass
+            # Total Price
+            cell = ws.cell(row=row_idx, column=13)
+            if cell.value:
+                try:
+                    val_str = str(cell.value).replace(',', '')
+                    cell.value = float(val_str)
+                    cell.number_format = '#,##0.00'
+                except: pass
 
     # Fill Surcharges
     expand_table_by_tag(ws, "{{TableStart:PISurcharge}}", "{{TableEnd:PISurcharge}}", surcharge_items)
 
+    # Footer Row Height
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.value and isinstance(cell.value, str) and "All prices quoted herein" in cell.value:
+                ws.row_dimensions[cell.row].height = 50
+                ws.row_dimensions[cell.row + 1].height = 50
+                break
+
     # Save
     now = datetime.datetime.now()
     timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
-    file_name = f"PI_NoDiscount_{contract.get('Name')}_{timestamp}.xlsx"
+    safe_name = sanitize_filename(contract.get('Name'))
+    file_name = f"PI_NoDiscount_{safe_name}_{timestamp}.xlsx"
     output_dir = get_output_directory()
     file_path = output_dir / file_name
     wb.save(str(file_path))
@@ -1731,33 +1819,40 @@ def generate_production_order_file(contract_id: str, template_path: str):
         FROM Contract__c 
         WHERE Id = '{contract_id}'
     """
-    contract_res = sf.query(contract_query)
-    if not contract_res['records']:
-        raise ValueError(f"Contract not found: {contract_id}")
-    contract_data = contract_res['records'][0]
+    try:
+        contract_res = sf.query(contract_query)
+        contract_data = contract_res['records'][0] if contract_res['totalSize'] > 0 else {}
+    except Exception as e:
+        print(f"Error querying Contract: {e}")
+        raise ValueError(f"Error querying Contract: {e}")
 
-    # Query Products
+    # Query Order Products
     products_query = f"""
-        SELECT Id, Name, Charge_Unit__c, Cont__c, Crates__c, Height__c, Length__c, Quantity__c, Width__c, m2__c, m3__c, Packing__c, Tons__c, Product_Description__c, Delivery_Date__c, Line_number__c, SKU__c, Vietnamese_Description__c, Order__r.Name 
+        SELECT Id, IsDeleted, Name, CreatedDate, LastModifiedDate, SystemModstamp, LastActivityDate, LastViewedDate, LastReferencedDate, Charge_Unit__c, Cont__c, Container_Weight_Regulations__c, Crates__c, Height__c, Length__c, List_Price__c, Quantity__c, Width__c, m2__c, m3__c, ml__c, Packing__c, Sales_Price__c, Tons__c, Total_Price_USD__c, Actual_Cont__c, Actual_Crates__c, Actual_Quantity__c, Actual_Tons__c, Actual_m2__c, Actual_m3__c, Actual_ml__c, Product_Description__c, Actual_Total_Price_USD__c, Pending_Cont__c, Pending_Crates__c, Pending_m2__c, Pending_m3__c, Pending_ml__c, Pending_Quantity__c, Pending_Amount_USD__c, Pending_Tons__c, Delivery_Date__c, Planned_Quantity__c, Total_Child_Order_Actual_Quantity__c, Pending_Quantity_for_child_2__c, Delivered_date__c, Line_number__c, Line_item_no_for_print__c, SKU__c, Vietnamese_Description__c, Order__r.Name, Contract_PI__r.Id 
         FROM Order_Product__c 
         WHERE Contract_PI__r.Id = '{contract_id}' 
         ORDER BY Line_number__c ASC
     """
-    products_res = sf.query(products_query)
-    products_data = products_res['records']
+    try:
+        products_res = sf.query(products_query)
+        products_data = products_res['records']
+    except Exception as e:
+        print(f"Error querying Order Products: {e}")
+        products_data = []
 
     wb = openpyxl.load_workbook(template_path)
     ws = wb.active
 
     # Flatten data
     flat_data = {}
-    for k, v in contract_data.items():
-        flat_data[f"Contract__c.{k}"] = v
-        if "Date" in k and v:
-            try:
-                dt = datetime.datetime.strptime(v[:10], "%Y-%m-%d")
-                flat_data[f"Contract__c.{k}\\@dd/MM/yyyy"] = dt.strftime("%d/%m/%Y")
-            except: pass
+    if contract_data:
+        for k, v in contract_data.items():
+            flat_data[f"Contract__c.{k}"] = v
+            if "Date" in k and v:
+                try:
+                    dt = datetime.datetime.strptime(v[:10], "%Y-%m-%d")
+                    flat_data[f"Contract__c.{k}\\@dd/MM/yyyy"] = dt.strftime("%d/%m/%Y")
+                except: pass
 
     # Fill placeholders
     for row in ws.iter_rows():
@@ -1776,7 +1871,10 @@ def generate_production_order_file(contract_id: str, template_path: str):
                         if format_part and replace_val:
                             try:
                                 val_str = str(replace_val).split('T')[0]
-                                dt = datetime.datetime.strptime(val_str, "%Y-%m-%d")
+                                if 'T' in str(replace_val):
+                                     dt = datetime.datetime.strptime(str(replace_val).split('+')[0].split('.')[0], "%Y-%m-%dT%H:%M:%S")
+                                else:
+                                     dt = datetime.datetime.strptime(val_str, "%Y-%m-%d")
                                 py_format = format_part.replace('dd', '%d').replace('MM', '%m').replace('yyyy', '%Y')
                                 replace_val = dt.strftime(py_format)
                             except: pass
@@ -1798,12 +1896,11 @@ def generate_production_order_file(contract_id: str, template_path: str):
         if num_items > 1:
             ws.insert_rows(table_start_row + 1, amount=num_items - 1)
             
-        # Copy styles (simplified)
         thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
         align_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
         align_left = Alignment(horizontal='left', vertical='center', wrap_text=True)
         
-        # Copy styles from template row
+        # Copy styles
         if num_items > 1:
             for i in range(1, num_items):
                 for col in range(1, 16):
@@ -1819,10 +1916,10 @@ def generate_production_order_file(contract_id: str, template_path: str):
         for i, item in enumerate(products_data):
             row_idx = table_start_row + i
             
-            # Unmerge if needed
+            # Unmerge
             for col in range(1, 16):
                 cell = ws.cell(row=row_idx, column=col)
-                for merged_range in ws.merged_cells.ranges:
+                for merged_range in list(ws.merged_cells.ranges):
                     if cell.coordinate in merged_range:
                         try: ws.unmerge_cells(str(merged_range))
                         except: pass
@@ -1888,9 +1985,34 @@ def generate_production_order_file(contract_id: str, template_path: str):
                     ws.cell(row=row_idx, column=15).value = del_date
             ws.cell(row=row_idx, column=15).alignment = align_center
 
+        # Merge duplicate "TÊN HÀNG" (Column D / 4)
+        merge_identical_cells(ws, table_start_row, len(products_data), 4)
+        
+        # Merge duplicate "THỜI GIAN GIAO HÀNG" (Column O / 15)
+        # Note: merge_identical_cells helper uses left alignment, but date needs center.
+        # We might need to manually adjust alignment after merging or update helper.
+        # For now, let's use the helper and override alignment if needed, or just replicate logic.
+        # Replicating logic for Col 15 to ensure Center alignment
+        start_merge_row = table_start_row
+        current_val = ws.cell(row=start_merge_row, column=15).value
+        for i in range(1, len(products_data)):
+            row_idx = table_start_row + i
+            val = ws.cell(row=row_idx, column=15).value
+            if val != current_val:
+                if row_idx - 1 > start_merge_row:
+                    ws.merge_cells(start_row=start_merge_row, start_column=15, end_row=row_idx-1, end_column=15)
+                    ws.cell(row=start_merge_row, column=15).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                start_merge_row = row_idx
+                current_val = val
+        last_row = table_start_row + len(products_data) - 1
+        if last_row > start_merge_row:
+            ws.merge_cells(start_row=start_merge_row, start_column=15, end_row=last_row, end_column=15)
+            ws.cell(row=start_merge_row, column=15).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
     now = datetime.datetime.now()
     timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
-    file_name = f"ProductionOrder_{contract_data.get('Production_Order_Number__c', 'Draft')}_{timestamp}.xlsx"
+    safe_name = sanitize_filename(contract_data.get('Production_Order_Number__c', 'Draft'))
+    file_name = f"ProductionOrder_{safe_name}_{timestamp}.xlsx"
     output_dir = get_output_directory()
     file_path = output_dir / file_name
     wb.save(str(file_path))
@@ -1933,39 +2055,52 @@ async def generate_production_order_endpoint(contract_id: str):
 def generate_quote_no_discount_file(quote_id: str, template_path: str):
     sf = get_salesforce_connection()
     
-    # Query Quote Items
+    # Query Quote Items (Full Query)
     query = f"""
-    SELECT Id, Quote.Name, Quote.AccountId, Quote.Total_Crates__c, Quote.Total_m3__c, 
-           Quote.Total_Tons__c, Quote.Total_Conts__c, Quote.Sub_Total_USD__c, Quote.Total_Price_USD__c,
-           Product_Name__c, Product_Description__c, Length__c, Width__c, Height__c, Quantity, 
-           Crates__c, m2__c, m3__c, Tons__c, Cont__c, Packing__c, Unit_Price_USD__c, Total_Price_USD__c,
-           Quote_Line_Item_Number_Quote__c
+    SELECT Id, IsDeleted, LineNumber, CreatedDate, LastModifiedDate, SystemModstamp, LastViewedDate, LastReferencedDate, Quantity, UnitPrice, Discount, HasRevenueSchedule, HasQuantitySchedule, Description, ServiceDate, SortOrder, HasSchedule, ListPrice, Subtotal, TotalPrice, Product_Description__c, Length__c, Width__c, Height__c, Line_Number__c, Packing__c, Total_Price_to_sumup__c, Cont__c, Crates__c, Tons__c, Container_Weight_Regulations__c, Discount__c, Unit_Price__c, L_x_W_x_H__c, ml_x_m2_x_m3__c, Crates_and_Packing__c, Unit_Price_USD__c, ChargeUnit__c, Product_Name__c, m2__c, m3__c, ml__c, Total_Price_USD__c, L_Quote__c, W_Quote__c, H_Quote__c, PCS_Quote__c, Crates_Quote__c, Charge_Unit_Quote__c, Packing_Quote__c, Quote_Line_Item_Number_Quote__c, Opportunity_Id__c, Quote_display_name__c, Quote.Id, Quote.OwnerId, Quote.IsDeleted, Quote.Name, Quote.RecordTypeId, Quote.CreatedDate, Quote.CreatedById, Quote.LastModifiedDate, Quote.LastModifiedById, Quote.SystemModstamp, Quote.LastViewedDate, Quote.LastReferencedDate, Quote.OpportunityId, Quote.Pricebook2Id, Quote.ContactId, Quote.QuoteNumber, Quote.IsSyncing, Quote.ShippingHandling, Quote.Tax, Quote.Status, Quote.ExpirationDate, Quote.Description, Quote.Subtotal, Quote.TotalPrice, Quote.LineItemCount, Quote.BillingStreet, Quote.BillingCity, Quote.BillingState, Quote.BillingPostalCode, Quote.BillingCountry, Quote.BillingLatitude, Quote.BillingLongitude, Quote.BillingGeocodeAccuracy, Quote.BillingAddress, Quote.ShippingStreet, Quote.ShippingCity, Quote.ShippingState, Quote.ShippingPostalCode, Quote.ShippingCountry, Quote.ShippingLatitude, Quote.ShippingLongitude, Quote.ShippingGeocodeAccuracy, Quote.ShippingAddress, Quote.QuoteToStreet, Quote.QuoteToCity, Quote.QuoteToState, Quote.QuoteToPostalCode, Quote.QuoteToCountry, Quote.QuoteToLatitude, Quote.QuoteToLongitude, Quote.QuoteToGeocodeAccuracy, Quote.QuoteToAddress, Quote.AdditionalStreet, Quote.AdditionalCity, Quote.AdditionalState, Quote.AdditionalPostalCode, Quote.AdditionalCountry, Quote.AdditionalLatitude, Quote.AdditionalLongitude, Quote.AdditionalGeocodeAccuracy, Quote.AdditionalAddress, Quote.BillingName, Quote.ShippingName, Quote.QuoteToName, Quote.AdditionalName, Quote.Email, Quote.Phone, Quote.Fax, Quote.ContractId, Quote.AccountId, Quote.Discount, Quote.GrandTotal, Quote.CanCreateQuoteLineItems, Quote.Sub_Total_USD__c, Quote.Fumigation__c, Quote.Total_Crates__c, Quote.Total_m3__c, Quote.Total_Tons__c, Quote.Total_Conts__c, Quote.REMARK_NUMBER_ON_DOCUMENTS__c, Quote.Packing__c, Quote.Shipping_Schedule__c, Quote.Port_of_Discharge__c, Quote.Export_Route_Carrier__c, Quote.In_words__c, Quote.Discount__c, Quote.Total_Price_USD__c, Quote.Total_Quote_Line_Items__c, Quote.Port_of_Origin__c, Quote.Stockyard__c, Quote.Created_Date__c, Quote.Discount_Amount__c, Quote.Is_new_quote__c, Quote.First_approved_by__c, Quote.Final_approved_by__c, Quote.Account_approved_pricebook__c, Quote.Is_approved__c, Quote.Terms_of_Sale__c, Quote.Terms_of_Payment__c, Quote.Incoterms__c 
     FROM QuoteLineItem 
     WHERE QuoteId = '{quote_id}' 
     ORDER BY Quote_Line_Item_Number_Quote__c ASC
     """
-    result = sf.query_all(query)
+    
+    try:
+        result = sf.query_all(query)
+    except Exception as e:
+        print(f"Error querying quote items: {e}")
+        raise ValueError(f"Error querying quote items: {e}")
+
     if not result['records']:
-        # Try fetching just Quote
-        q_res = sf.query(f"SELECT Id, Name, AccountId FROM Quote WHERE Id = '{quote_id}'")
-        if not q_res['records']: raise ValueError("Quote not found")
-        quote_data = q_res['records'][0]
-        quote_items = []
+        # Try fetching just the Quote if no items
+        try:
+            q_res = sf.query(f"SELECT Id, Name FROM Quote WHERE Id = '{quote_id}'")
+            if q_res['records']:
+                quote_data = q_res['records'][0]
+                quote_items = []
+            else:
+                raise ValueError(f"Quote not found: {quote_id}")
+        except:
+            raise ValueError(f"Quote not found: {quote_id}")
     else:
         quote_items = result['records']
-        quote_data = quote_items[0]['Quote']
+        first_item = quote_items[0]
+        if 'Quote' in first_item and first_item['Quote']:
+            quote_data = first_item['Quote']
+        else:
+            raise ValueError("Quote data missing in line items.")
 
     # Flatten Data
     full_data = {}
     for k, v in quote_data.items():
         full_data[f"Quote.{k}"] = v
         
-    if quote_data.get('AccountId'):
+    # Fetch Account
+    account_id = quote_data.get('AccountId')
+    if account_id:
+        acc_fields = ["Name", "BillingStreet", "BillingCity", "BillingPostalCode", "BillingCountry", "Phone", "Fax__c", "VAT__c"]
         try:
-            acc = sf.Account.get(quote_data['AccountId'])
-            full_data[f"Quote.Account.Name"] = acc.get('Name')
-            full_data[f"Quote.Account.BillingStreet"] = acc.get('BillingStreet')
-            # ... add other fields as needed
+            acc = sf.Account.get(account_id)
+            for k in acc_fields:
+                full_data[f"Quote.Account.{k}"] = acc.get(k)
         except: pass
 
     # Inject Sequential Number
@@ -1980,19 +2115,104 @@ def generate_quote_no_discount_file(quote_id: str, template_path: str):
         for cell in row:
             if cell.value and isinstance(cell.value, str):
                 val = cell.value
-                # Simple replacement for Quote
+                
+                # Conditional Logic
+                if_pattern = r"\{\{#if\s+([\w\.]+)\s+'=='\s+'([^']+)'\}\}(.*?)\{\{else\}\}(.*?)\{\{/if\}\}"
+                if_matches = re.findall(if_pattern, val)
+                for match in if_matches:
+                    key, target_val, true_text, false_text = match
+                    full_match_str = f"{{{{#if {key} '==' '{target_val}'}}}}{true_text}{{{{else}}}}{false_text}{{{{/if}}}}"
+                    actual_val = str(full_data.get(key, ""))
+                    if actual_val.lower() == target_val.lower():
+                        val = val.replace(full_match_str, true_text)
+                    else:
+                        val = val.replace(full_match_str, false_text)
+
+                # Float Fields
+                float_fields = [
+                    "{{Quote.Total_Crates__c}}", "{{Quote.Total_m3__c}}",
+                    "{{Quote.Total_Tons__c}}", "{{Quote.Total_Conts__c}}",
+                    "{{Quote.Sub_Total_USD__c\\# #,##0.##}}",
+                    "{{Quote.Total_Price_USD__c\\# #,##0.##}}"
+                ]
+                is_float_field = False
+                for field in float_fields:
+                    if field in val:
+                        key_part = field.replace("{{", "").replace("}}", "").split("\\#")[0]
+                        value = full_data.get(key_part)
+                        if value is not None:
+                            try:
+                                cell.value = float(value)
+                                cell.number_format = '#,##0.00'
+                                is_float_field = True
+                            except ValueError:
+                                pass
+                        break
+                if is_float_field:
+                    continue
+
+                # General Replacement
                 for key, value in full_data.items():
                     placeholder = f"{{{{{key}}}}}"
                     if placeholder in val:
                         val = val.replace(placeholder, str(value) if value is not None else "")
+                    
+                    pattern = f"\\{{{{{key}\\\\#(.*?)\\}}}}"
+                    matches = re.findall(pattern, val)
+                    for fmt in matches:
+                         if value is not None and isinstance(value, (int, float)):
+                             if "#,##0.##" in fmt:
+                                 formatted_val = "{:,.2f}".format(value)
+                             else:
+                                 formatted_val = str(value)
+                             val = val.replace(f"{{{{{key}\\#{fmt}}}}}", formatted_val)
+                         else:
+                             val = val.replace(f"{{{{{key}\\#{fmt}}}}}", str(value) if value is not None else "")
                 cell.value = val
 
     # Fill Product Table
-    expand_table_by_tag(ws, "{{TableStart:GetQuoteLine}}", "{{TableEnd:GetQuoteLine}}", quote_items)
+    table_start_row = expand_table_by_tag(ws, "{{TableStart:GetQuoteLine}}", "{{TableEnd:GetQuoteLine}}", quote_items)
 
+    if table_start_row and quote_items:
+        # Apply Bold Formatting (Product Name is in Product_Name__c)
+        apply_bold_formatting(ws, table_start_row, quote_items, 2, 'Product_Name__c')
+        
+        # Merge Identical Cells
+        merge_identical_cells(ws, table_start_row, len(quote_items), 2)
+
+        # Format Price Columns (L=12, M=13)
+        for i in range(len(quote_items)):
+            row_idx = table_start_row + i
+            # Unit Price
+            cell = ws.cell(row=row_idx, column=12)
+            if cell.value:
+                try:
+                    val_str = str(cell.value).replace(',', '')
+                    cell.value = float(val_str)
+                    cell.number_format = '#,##0.00 "USD"'
+                except: pass
+            # Total Price
+            cell = ws.cell(row=row_idx, column=13)
+            if cell.value:
+                try:
+                    val_str = str(cell.value).replace(',', '')
+                    cell.value = float(val_str)
+                    cell.number_format = '#,##0.00'
+                except: pass
+
+    # Footer Row Height
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.value and isinstance(cell.value, str) and "All prices quoted herein" in cell.value:
+                ws.row_dimensions[cell.row].height = 50
+                ws.row_dimensions[cell.row + 1].height = 50
+                break
+
+    # Save
     now = datetime.datetime.now()
     timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
-    file_name = f"Quote_{quote_data.get('Name')}_{timestamp}.xlsx"
+    safe_name = sanitize_filename(quote_data.get('Name'))
+    file_name = f"Quote_NoDiscount_{safe_name}_{timestamp}.xlsx"
     output_dir = get_output_directory()
     file_path = output_dir / file_name
     wb.save(str(file_path))
