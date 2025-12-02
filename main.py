@@ -1683,7 +1683,24 @@ def generate_pi_no_discount_file(contract_id: str, template_path: str):
     output_dir = get_output_directory()
     file_path = output_dir / file_name
     wb.save(str(file_path))
-    return file_path, file_name
+    
+    # Upload to Salesforce
+    with open(file_path, "rb") as f:
+        file_data = f.read()
+    encoded = base64.b64encode(file_data).decode("utf-8")
+    
+    content_version = sf.ContentVersion.create({
+        "Title": file_name.rsplit(".", 1)[0],
+        "PathOnClient": file_name,
+        "VersionData": encoded,
+        "FirstPublishLocationId": contract_id
+    })
+    
+    return {
+        "file_path": str(file_path),
+        "file_name": file_name,
+        "salesforce_content_version_id": content_version["id"]
+    }
 
 @app.get("/generate-pi-no-discount/{contract_id}")
 async def generate_pi_no_discount_endpoint(contract_id: str):
@@ -1696,8 +1713,8 @@ async def generate_pi_no_discount_endpoint(contract_id: str):
              else:
                  raise HTTPException(status_code=404, detail=f"Template not found: {template_path}")
         
-        file_path, file_name = generate_pi_no_discount_file(contract_id, template_path)
-        return FileResponse(path=str(file_path), filename=file_name, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        result = generate_pi_no_discount_file(contract_id, template_path)
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1877,7 +1894,24 @@ def generate_production_order_file(contract_id: str, template_path: str):
     output_dir = get_output_directory()
     file_path = output_dir / file_name
     wb.save(str(file_path))
-    return file_path, file_name
+    
+    # Upload to Salesforce
+    with open(file_path, "rb") as f:
+        file_data = f.read()
+    encoded = base64.b64encode(file_data).decode("utf-8")
+    
+    content_version = sf.ContentVersion.create({
+        "Title": file_name.rsplit(".", 1)[0],
+        "PathOnClient": file_name,
+        "VersionData": encoded,
+        "FirstPublishLocationId": contract_id
+    })
+    
+    return {
+        "file_path": str(file_path),
+        "file_name": file_name,
+        "salesforce_content_version_id": content_version["id"]
+    }
 
 @app.get("/generate-production-order/{contract_id}")
 async def generate_production_order_endpoint(contract_id: str):
@@ -1889,8 +1923,8 @@ async def generate_production_order_endpoint(contract_id: str):
              else:
                  raise HTTPException(status_code=404, detail=f"Template not found: {template_path}")
         
-        file_path, file_name = generate_production_order_file(contract_id, template_path)
-        return FileResponse(path=str(file_path), filename=file_name, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        result = generate_production_order_file(contract_id, template_path)
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1962,7 +1996,24 @@ def generate_quote_no_discount_file(quote_id: str, template_path: str):
     output_dir = get_output_directory()
     file_path = output_dir / file_name
     wb.save(str(file_path))
-    return file_path, file_name
+    
+    # Upload to Salesforce
+    with open(file_path, "rb") as f:
+        file_data = f.read()
+    encoded = base64.b64encode(file_data).decode("utf-8")
+    
+    content_version = sf.ContentVersion.create({
+        "Title": file_name.rsplit(".", 1)[0],
+        "PathOnClient": file_name,
+        "VersionData": encoded,
+        "FirstPublishLocationId": quote_id
+    })
+    
+    return {
+        "file_path": str(file_path),
+        "file_name": file_name,
+        "salesforce_content_version_id": content_version["id"]
+    }
 
 @app.get("/generate-quote-no-discount/{quote_id}")
 async def generate_quote_no_discount_endpoint(quote_id: str):
@@ -1974,8 +2025,8 @@ async def generate_quote_no_discount_endpoint(quote_id: str):
              else:
                  raise HTTPException(status_code=404, detail=f"Template not found: {template_path}")
         
-        file_path, file_name = generate_quote_no_discount_file(quote_id, template_path)
-        return FileResponse(path=str(file_path), filename=file_name, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        result = generate_quote_no_discount_file(quote_id, template_path)
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
