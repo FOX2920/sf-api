@@ -2382,8 +2382,49 @@ def expand_table_pi(ws, start_tag, end_tag, data):
     
     return table_row_idx
 
+def get_picklist_values(sf, object_name, field_name):
+    """
+    Fetch picklist values for a given object and field from Salesforce.
+    """
+    try:
+        desc = getattr(sf, object_name).describe()
+        for field in desc['fields']:
+            if field['name'] == field_name:
+                return [entry['value'] for entry in field['picklistValues']]
+    except Exception as e:
+        print(f"Error fetching picklist values for {object_name}.{field_name}: {e}")
+    return []
+
+def format_picklist_checkboxes(options, selected_value, uppercase=False):
+    """
+    Format picklist options as a checkbox list.
+    Mark the selected value with [x], others with [ ].
+    """
+    formatted_lines = []
+    if selected_value is None:
+        selected_value = ""
+    
+    # Normalize selected value for comparison
+    selected_value_norm = str(selected_value).strip().lower()
+    
+    for opt in options:
+        opt_label = str(opt)
+        if uppercase:
+            opt_label = opt_label.upper()
+            
+        # Check if this option is selected
+        is_selected = opt.strip().lower() == selected_value_norm
+        
+        checkbox = "[x]" if is_selected else "[ ]"
+        formatted_lines.append(f"{checkbox} {opt_label}")
+        
+    return "\n".join(formatted_lines)
+
 def generate_pi_no_discount_logic(contract_id, template_path):
     sf = get_salesforce_connection()
+    
+    # Get Incoterms picklist values
+    incoterms_options = get_picklist_values(sf, 'Contract__c', 'Incoterms__c')
     
     # Query Contract
     query = f"""
@@ -2426,6 +2467,21 @@ def generate_pi_no_discount_logic(contract_id, template_path):
             if cell.value and isinstance(cell.value, str):
                 val = cell.value
                 
+                # --- NEW: Handle Incoterms with checkbox formatting ---
+                if "{{Contract__c.Incoterms__c}}" in val:
+                    incoterms_value = full_data.get('Contract__c.Incoterms__c', '')
+                    incoterms_checkbox_text = format_picklist_checkboxes(
+                        incoterms_options, incoterms_value, uppercase=True
+                    )
+                    val = val.replace("{{Contract__c.Incoterms__c}}", incoterms_checkbox_text)
+                    if cell.alignment:
+                        new_alignment = style_copy(cell.alignment)
+                    else:
+                        new_alignment = Alignment()
+                    new_alignment.wrap_text = True
+                    cell.alignment = new_alignment
+                # -----------------------------------------------
+
                 if_pattern = r"\{\{#if\s+([\w\.]+)\s+'(==|contains)'\s+'([^']+)'\}\}(.*?)\{\{else\}\}(.*?)\{\{/if\}\}"
                 if_matches = re.findall(if_pattern, val)
                 for match in if_matches:
@@ -2771,6 +2827,9 @@ def expand_table_quote(ws, start_tag, end_tag, data):
 def generate_quote_no_discount_logic(quote_id, template_path):
     sf = get_salesforce_connection()
     
+    # Get Incoterms picklist values
+    incoterms_options = get_picklist_values(sf, 'Quote', 'Incoterms__c')
+    
     query = f"""
     SELECT Id, IsDeleted, LineNumber, CreatedDate, LastModifiedDate, SystemModstamp, LastViewedDate, LastReferencedDate, Quantity, UnitPrice, Discount, HasRevenueSchedule, HasQuantitySchedule, Description, ServiceDate, SortOrder, HasSchedule, ListPrice, Subtotal, TotalPrice, Product_Description__c, Length__c, Width__c, Height__c, Line_Number__c, Packing__c, Total_Price_to_sumup__c, Cont__c, Crates__c, Tons__c, Container_Weight_Regulations__c, Discount__c, Unit_Price__c, L_x_W_x_H__c, ml_x_m2_x_m3__c, Crates_and_Packing__c, Unit_Price_USD__c, ChargeUnit__c, Product_Name__c, m2__c, m3__c, ml__c, Total_Price_USD__c, L_Quote__c, W_Quote__c, H_Quote__c, PCS_Quote__c, Crates_Quote__c, Charge_Unit_Quote__c, Packing_Quote__c, Quote_Line_Item_Number_Quote__c, Opportunity_Id__c, Quote_display_name__c, Quote.Id, Quote.OwnerId, Quote.IsDeleted, Quote.Name, Quote.RecordTypeId, Quote.CreatedDate, Quote.CreatedById, Quote.LastModifiedDate, Quote.LastModifiedById, Quote.SystemModstamp, Quote.LastViewedDate, Quote.LastReferencedDate, Quote.OpportunityId, Quote.Pricebook2Id, Quote.ContactId, Quote.QuoteNumber, Quote.IsSyncing, Quote.ShippingHandling, Quote.Tax, Quote.Status, Quote.ExpirationDate, Quote.Description, Quote.Subtotal, Quote.TotalPrice, Quote.LineItemCount, Quote.BillingStreet, Quote.BillingCity, Quote.BillingState, Quote.BillingPostalCode, Quote.BillingCountry, Quote.BillingLatitude, Quote.BillingLongitude, Quote.BillingGeocodeAccuracy, Quote.BillingAddress, Quote.ShippingStreet, Quote.ShippingCity, Quote.ShippingState, Quote.ShippingPostalCode, Quote.ShippingCountry, Quote.ShippingLatitude, Quote.ShippingLongitude, Quote.ShippingGeocodeAccuracy, Quote.ShippingAddress, Quote.QuoteToStreet, Quote.QuoteToCity, Quote.QuoteToState, Quote.QuoteToPostalCode, Quote.QuoteToCountry, Quote.QuoteToLatitude, Quote.QuoteToLongitude, Quote.QuoteToGeocodeAccuracy, Quote.QuoteToAddress, Quote.AdditionalStreet, Quote.AdditionalCity, Quote.AdditionalState, Quote.AdditionalPostalCode, Quote.AdditionalCountry, Quote.AdditionalLatitude, Quote.AdditionalLongitude, Quote.AdditionalGeocodeAccuracy, Quote.AdditionalAddress, Quote.BillingName, Quote.ShippingName, Quote.QuoteToName, Quote.AdditionalName, Quote.Email, Quote.Phone, Quote.Fax, Quote.ContractId, Quote.AccountId, Quote.Discount, Quote.GrandTotal, Quote.CanCreateQuoteLineItems, Quote.Sub_Total_USD__c, Quote.Fumigation__c, Quote.Total_Crates__c, Quote.Total_m3__c, Quote.Total_Tons__c, Quote.Total_Conts__c, Quote.REMARK_NUMBER_ON_DOCUMENTS__c, Quote.Packing__c, Quote.Shipping_Schedule__c, Quote.Port_of_Discharge__c, Quote.Export_Route_Carrier__c, Quote.In_words__c, Quote.Discount__c, Quote.Total_Price_USD__c, Quote.Total_Quote_Line_Items__c, Quote.Port_of_Origin__c, Quote.Stockyard__c, Quote.Created_Date__c, Quote.Discount_Amount__c, Quote.Is_new_quote__c, Quote.First_approved_by__c, Quote.Final_approved_by__c, Quote.Account_approved_pricebook__c, Quote.Is_approved__c, Quote.Terms_of_Sale__c, Quote.Terms_of_Payment__c, Quote.Incoterms__c 
     FROM QuoteLineItem 
@@ -2819,6 +2878,22 @@ def generate_quote_no_discount_logic(quote_id, template_path):
         for cell in row:
             if cell.value and isinstance(cell.value, str):
                 val = cell.value
+
+                # --- NEW: Handle Incoterms with checkbox formatting ---
+                if "{{Quote.Incoterms__c}}" in val:
+                    incoterms_value = full_data.get('Quote.Incoterms__c', '')
+                    incoterms_checkbox_text = format_picklist_checkboxes(
+                        incoterms_options, incoterms_value, uppercase=True
+                    )
+                    val = val.replace("{{Quote.Incoterms__c}}", incoterms_checkbox_text)
+                    if cell.alignment:
+                        new_alignment = style_copy(cell.alignment)
+                    else:
+                        new_alignment = Alignment()
+                    new_alignment.wrap_text = True
+                    cell.alignment = new_alignment
+                # -----------------------------------------------
+
                 if_pattern = r"\{\{#if\s+([\w\.]+)\s+'(==|contains)'\s+'([^']+)'\}\}(.*?)\{\{else\}\}(.*?)\{\{/if\}\}"
                 if_matches = re.findall(if_pattern, val)
                 for match in if_matches:
