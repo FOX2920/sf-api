@@ -2418,6 +2418,11 @@ def generate_pi_no_discount_logic(contract_id, template_path):
     for idx, item in enumerate(contract_items):
         item['Line_number_For_print__c'] = idx + 1
     
+    # --- Get Picklist Values for Incoterms ---
+    incoterms_options = get_picklist_values(sf, 'Contract__c', 'Incoterms__c')
+    incoterms_checkbox_text = format_picklist_checkboxes(incoterms_options, contract_data.get('Incoterms__c'), uppercase=True)
+    # -----------------------------------------
+
     wb = openpyxl.load_workbook(template_path)
     ws = wb.active
     
@@ -2514,6 +2519,12 @@ def generate_pi_no_discount_logic(contract_id, template_path):
                              val = val.replace(f"{{{{{key}\\#{fmt}}}}}", str(value) if value is not None else "")
                 
                 cell.value = val
+
+                # --- Replace Incoterms with Checkboxes ---
+                if cell.value and isinstance(cell.value, str) and "{{Contract__c.Incoterms__c}}" in cell.value:
+                    cell.value = cell.value.replace("{{Contract__c.Incoterms__c}}", incoterms_checkbox_text)
+                    cell.alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
+                # -----------------------------------------
 
     table_start_row = expand_table_pi(ws, "{{TableStart:ContractProduct2}}", "{{TableEnd:ContractProduct2}}", contract_items)
     
@@ -2799,6 +2810,11 @@ def generate_quote_no_discount_logic(quote_id, template_path):
     for k, v in quote_data.items():
         full_data[f"Quote.{k}"] = v
         
+    # --- Get Picklist Values for Incoterms (Quote) ---
+    incoterms_options = get_picklist_values(sf, 'Quote', 'Incoterms__c')
+    incoterms_checkbox_text = format_picklist_checkboxes(incoterms_options, quote_data.get('Incoterms__c'), uppercase=True)
+    # -------------------------------------------------
+        
     account_id = quote_data.get('AccountId')
     if account_id:
         acc_fields = ["Name", "BillingStreet", "BillingCity", "BillingPostalCode", "BillingCountry", "Phone", "Fax__c", "VAT__c"]
@@ -2886,6 +2902,12 @@ def generate_quote_no_discount_logic(quote_id, template_path):
                              val = val.replace(f"{{{{{key}\\#{fmt}}}}}", str(value) if value is not None else "")
                 
                 cell.value = val
+
+                # --- Replace Incoterms with Checkboxes (Quote) ---
+                if cell.value and isinstance(cell.value, str) and "{{Quote.Incoterms__c}}" in cell.value:
+                    cell.value = cell.value.replace("{{Quote.Incoterms__c}}", incoterms_checkbox_text)
+                    cell.alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
+                # -------------------------------------------------
 
     table_start_row = expand_table_quote(ws, "{{TableStart:GetQuoteLine}}", "{{TableEnd:GetQuoteLine}}", quote_items)
     if table_start_row and quote_items:
