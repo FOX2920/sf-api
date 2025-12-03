@@ -2250,6 +2250,997 @@ async def generate_quote_no_discount_endpoint(quote_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# ==========================================
+# NEW ENDPOINTS: PI, Quote, Production Order
+# ==========================================
+
+# --- PI No Discount Logic ---
+def expand_table_pi(ws, start_tag, end_tag, data):
+    """
+    Expand a single row table based on start and end tags (PI version).
+    """
+    # Find the row containing the tags
+    table_row_idx = None
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.value and isinstance(cell.value, str):
+                if start_tag in cell.value:
+                    table_row_idx = cell.row
+                    break
+        if table_row_idx:
+            break
+            
+    if not table_row_idx:
+        print(f"Warning: Table tags {start_tag} not found.")
+        return None
+
+    if not data:
+        # Clear tags
+        for col in range(1, ws.max_column + 1):
+            cell = ws.cell(row=table_row_idx, column=col)
+            if cell.value and isinstance(cell.value, str):
+                cell.value = cell.value.replace(start_tag, "").replace(end_tag, "")
+        return table_row_idx
+
+    num_rows = len(data)
+    add_rows = max(0, num_rows - 1)
+    
+    # Capture styles from the template row
+    max_col = ws.max_column
+    row_style = []
+    for col in range(1, max_col + 1):
+        cell = ws.cell(row=table_row_idx, column=col)
+        row_style.append(style_copy(cell._style) if cell.has_style else None)
+    
+    row_height = ws.row_dimensions[table_row_idx].height
+
+    # Handle merged cells (shift them down)
+    merges_to_shift = []
+    for mr in ws.merged_cells.ranges:
+        if mr.min_row > table_row_idx:
+            merges_to_shift.append((mr.min_row, mr.max_row, mr.min_col, mr.max_col))
+    
+    for mr in merges_to_shift:
+        rng = f"{get_column_letter(mr[2])}{mr[0]}:{get_column_letter(mr[3])}{mr[1]}"
+        ws.unmerge_cells(rng)
+
+    # Insert rows if needed
+    if add_rows > 0:
+        ws.insert_rows(table_row_idx + 1, amount=add_rows)
+        
+        for offset in range(1, add_rows + 1):
+            r = table_row_idx + offset
+            # Copy row height
+            if row_height is not None:
+                ws.row_dimensions[r].height = row_height
+                
+            for col in range(1, max_col + 1):
+                dst = ws.cell(row=r, column=col)
+                # Copy value from template row
+                src_val = ws.cell(row=table_row_idx, column=col).value
+                dst.value = src_val
+                
+                # Copy style
+                st = row_style[col - 1]
+                if st is not None:
+                    dst._style = style_copy(st)
+                    
+    # Re-merge shifted cells
+    for mr in merges_to_shift:
+        new_min_row = mr[0] + add_rows
+        new_max_row = mr[1] + add_rows
+        rng = f"{get_column_letter(mr[2])}{new_min_row}:{get_column_letter(mr[3])}{new_max_row}"
+        ws.merge_cells(rng)
+                    
+    # Fill data
+    for i, record in enumerate(data):
+        current_row_idx = table_row_idx + i
+        for col in range(1, ws.max_column + 1):
+            cell = ws.cell(row=current_row_idx, column=col)
+            if cell.value and isinstance(cell.value, str):
+                cell_val = cell.value.replace(start_tag, "").replace(end_tag, "")
+                
+                for key, value in record.items():
+                    placeholder = f"{{{{{key}}}}}"
+                    if placeholder in cell_val:
+                        cell_val = cell_val.replace(placeholder, str(value) if value is not None else "")
+                        
+                    pattern = f"\\{{{{{key}\\\\#(.*?)\\}}}}"
+                    matches = re.findall(pattern, cell_val)
+                    for fmt in matches:
+                        try:
+                            if value is not None:
+                                if isinstance(value, (int, float)):
+                                    if "#,##0.##" in fmt:
+                                         formatted_val = "{:,.2f}".format(value)
+                                    else:
+                                         formatted_val = str(value)
+                                    cell_val = cell_val.replace(f"{{{{{key}\\#{fmt}}}}}", formatted_val)
+                                else:
+                                    cell_val = cell_val.replace(f"{{{{{key}\\#{fmt}}}}}", str(value))
+                            else:
+                                cell_val = cell_val.replace(f"{{{{{key}\\#{fmt}}}}}", "")
+                        except:
+                             cell_val = cell_val.replace(f"{{{{{key}\\#{fmt}}}}}", str(value))
+                
+                cell.value = cell_val
+                
+                # Attempt to convert to number if it looks like one
+                if isinstance(cell.value, str):
+                    try:
+                        clean_val = cell.value.replace(',', '')
+                        f_val = float(clean_val)
+                        is_leading_zero = (len(clean_val) > 1 and clean_val.startswith('0') and not clean_val.startswith('0.'))
+                        
+                        if not is_leading_zero:
+                            if f_val.is_integer():
+                                cell.value = int(f_val)
+                            else:
+                                cell.value = f_val
+                    except ValueError:
+                        pass
+    
+    return table_row_idx
+
+def generate_pi_no_discount_logic(contract_id, template_path):
+    sf = get_salesforce_connection()
+    
+    # Query Contract
+    query = f"""
+    SELECT Id, IsDeleted, Name, CreatedDate, LastModifiedDate, SystemModstamp, LastActivityDate, LastViewedDate, LastReferencedDate, Cont__c, Container_Weight_Regulations__c, Crates__c, Height__c, Length__c, Line_Number__c, Packing__c, Sales_Price__c, Tons__c, Width__c, List_Price__c, Discount__c, Charge_Unit__c, Quantity__c, m2__c, m3__c, ml__c, Total_Price_USD__c, L_PI__c, W_PI__c, H_PI__c, PCS_PI__c, Crates_PI__c, Created_Date__c, Packing_PI__c, Product_Discription__c, Charge_Unit_PI__c, Actual_Cont__c, Pending_Cont__c, Clear__c, Actual_Crates__c, Actual_m2__c, Actual_m3__c, Actual_ml__c, Actual_Quantity__c, Actual_Tons__c, Actual_Total_Price_USD__c, Pending_Crates__c, Pending_m2__c, Pending_m3__c, Pending_ml__c, Pending_Quantity__c, Pending_Tons__c, Pending_Amount_USD__c, Delivery_Date__c, Delivery_Quantity__c, Is_Delivery_Quantity_Valid__c, Delivery_Quantity_number__c, Unscheduled_Quantity__c, Line_number_For_print__c, Product__r.Id, Product__r.Name, Product__r.ProductCode, Product__r.Description, Product__r.QuantityScheduleType, Product__r.QuantityInstallmentPeriod, Product__r.NumberOfQuantityInstallments, Product__r.RevenueScheduleType, Product__r.RevenueInstallmentPeriod, Product__r.NumberOfRevenueInstallments, Product__r.IsActive, Product__r.CreatedDate, Product__r.CreatedById, Product__r.LastModifiedDate, Product__r.LastModifiedById, Product__r.SystemModstamp, Product__r.Family, Product__r.ExternalDataSourceId, Product__r.ExternalId, Product__r.DisplayUrl, Product__r.QuantityUnitOfMeasure, Product__r.IsDeleted, Product__r.IsArchived, Product__r.LastViewedDate, Product__r.LastReferencedDate, Product__r.StockKeepingUnit, Product__r.Product_description_in_Vietnamese__c, Product__r.specific_gravity__c, Product__r.Bottom_cladding_coefficient__c, Product__r.STONE_Color_Type__c, Product__r.Packing__c, Product__r.Long__c, Product__r.High__c, Product__r.Width__c, Product__r.Long_special__c, Product__r.High_special__c, Product__r.Image__c, Product__r.Charge_Unit__c, Product__r.Width_special__c, Product__r.STONE_Class__c, Product__r.Description__c, Product__r.List_Price__c, Product__r.Weight_per_unit__c, Product__r.Edge_Finish__c, Product__r.Suppliers__c, Product__r.m_per_unit__c, Product__r.Application__c, Product__r.Surface_Finish__c, Product__r.m3_per_unit__c, Product__r.Pricing_Method__c, Contract__r.Id, Contract__r.OwnerId, Contract__r.IsDeleted, Contract__r.Name, Contract__r.CreatedDate, Contract__r.CreatedById, Contract__r.LastModifiedDate, Contract__r.LastModifiedById, Contract__r.SystemModstamp, Contract__r.LastActivityDate, Contract__r.LastViewedDate, Contract__r.LastReferencedDate, Contract__r.Account__c, Contract__r.Quote__c, Contract__r.Bill_To__c, Contract__r.Bill_To_Name__c, Contract__r.Contact_Name__c, Contract__r.Expiration_Date__c, Contract__r.Export_Route_Carrier__c, Contract__r.Fax__c, Contract__r.Phone__c, Contract__r.Fumigation__c, Contract__r.Incoterms__c, Contract__r.In_words__c, Contract__r.Packing__c, Contract__r.Port_of_Discharge__c, Contract__r.REMARK_NUMBER_ON_DOCUMENTS__c, Contract__r.Shipping_Schedule__c, Contract__r.Total_Conts__c, Contract__r.Total_Crates__c, Contract__r.Total_m3__c, Contract__r.Sub_Total_USD__c, Contract__r.Total_Tons__c, Contract__r.Deposit_Percentage__c, Contract__r.Discount__c, Contract__r.Total_Price_USD__c, Contract__r.Deposit__c, Contract__r.Stage__c, Contract__r.Total_Payment_Received__c, Contract__r.Expected_ETD__c, Contract__r.Port_of_Origin__c, Contract__r.Price_Book__c, Contract__r.Stockyard__c, Contract__r.Created_Date__c, Contract__r.Total_Contract_Product__c, Contract__r.Pending_Products__c, Contract__r.Total_Payment_Received_USD__c, Contract__r.Production_Order_Number__c, Contract__r.Total_m2__c, Contract__r.Total_Pcs__c, Contract__r.Total_Pcs_PO__c, Contract__r.Planned_Shipments__c, Contract__r.Is_approved__c, Contract__r.Deposited_amount_USD__c, Contract__r.Design_confirmed__c, Contract__r.Contract_type__c, Contract__r.Fully_deposited__c, Contract__r.Discount_Amount__c, Contract__r.Terms_of_Payment__c, Contract__r.Terms_of_Sale__c, Contract__r.Total_surcharge__c FROM Contract_Product__c where Contract__r.Id = '{contract_id}' ORDER BY Line_Number__c ASC
+    """
+    
+    result = sf.query_all(query)
+    if not result['records']:
+        raise ValueError(f"No contract items found for ID: {contract_id}")
+    
+    contract_items = result['records']
+    first_item = contract_items[0]
+    if 'Contract__r' in first_item and first_item['Contract__r']:
+        contract_data = first_item['Contract__r']
+    else:
+        raise ValueError("Contract data missing in line items.")
+
+    full_data = {}
+    for k, v in contract_data.items():
+        full_data[f"Contract__c.{k}"] = v
+        
+    account_id = contract_data.get('Account__c')
+    if account_id:
+        acc_fields = ["Name", "BillingStreet", "BillingCity", "BillingPostalCode", "BillingCountry", "Phone", "Fax__c", "VAT__c"]
+        try:
+            acc = sf.Account.get(account_id)
+            for k in acc_fields:
+                full_data[f"Contract__c.Account__r.{k}"] = acc.get(k)
+        except Exception as e:
+            print(f"Error fetching account: {e}")
+            
+    for idx, item in enumerate(contract_items):
+        item['Line_number_For_print__c'] = idx + 1
+    
+    wb = openpyxl.load_workbook(template_path)
+    ws = wb.active
+    
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.value and isinstance(cell.value, str):
+                val = cell.value
+                
+                if_pattern = r"\{\{#if\s+([\w\.]+)\s+'(==|contains)'\s+'([^']+)'\}\}(.*?)\{\{else\}\}(.*?)\{\{/if\}\}"
+                if_matches = re.findall(if_pattern, val)
+                for match in if_matches:
+                    key, operator, target_val, true_text, false_text = match
+                    full_match_str = f"{{{{#if {key} '{operator}' '{target_val}'}}}}{true_text}{{{{else}}}}{false_text}{{{{/if}}}}"
+                    
+                    actual_val = full_data.get(key)
+                    if actual_val is None:
+                        actual_val = ""
+                    else:
+                        actual_val = str(actual_val)
+                        
+                    condition_met = False
+                    if operator == '==':
+                        condition_met = actual_val.lower() == target_val.lower()
+                    elif operator == 'contains':
+                        condition_met = target_val.lower() in actual_val.lower()
+                        
+                    if condition_met:
+                        val = val.replace(full_match_str, true_text)
+                    else:
+                        val = val.replace(full_match_str, false_text)
+
+                float_fields = [
+                    "{{Contract__c.Total_Crates__c}}",
+                    "{{Contract__c.Total_m3__c}}",
+                    "{{Contract__c.Total_Tons__c}}",
+                    "{{Contract__c.Total_Conts__c}}",
+                    "{{Contract__c.Sub_Total_USD__c\\# #,##0.##}}",
+                    "{{Contract__c.Total_Price_USD__c\\# #,##0.##}}",
+                    "{{Contract__c.Deposit__c\\# #,##0.##}}"
+                ]
+                
+                is_float_field = False
+                for field in float_fields:
+                    if field in val:
+                        key_part = field.replace("{{", "").replace("}}", "").split("\\#")[0]
+                        value = full_data.get(key_part)
+                        if value is not None:
+                            try:
+                                cell.value = float(value)
+                                cell.number_format = '#,##0.00'
+                                is_float_field = True
+                            except ValueError:
+                                pass
+                        break
+                
+                if is_float_field:
+                    continue
+
+                for key, value in full_data.items():
+                    placeholder = f"{{{{{key}}}}}"
+                    if placeholder in val:
+                        val = val.replace(placeholder, str(value) if value is not None else "")
+                    
+                    pattern = f"\\{{{{{key}\\\\#(.*?)\\}}}}"
+                    matches = re.findall(pattern, val)
+                    for fmt in matches:
+                         if value is not None and isinstance(value, (int, float)):
+                             if "#,##0.##" in fmt:
+                                 formatted_val = "{:,.2f}".format(value)
+                             else:
+                                 formatted_val = str(value)
+                             val = val.replace(f"{{{{{key}\\#{fmt}}}}}", formatted_val)
+                         else:
+                             val = val.replace(f"{{{{{key}\\#{fmt}}}}}", str(value) if value is not None else "")
+                
+                cell.value = val
+
+    table_start_row = expand_table_pi(ws, "{{TableStart:ContractProduct2}}", "{{TableEnd:ContractProduct2}}", contract_items)
+    
+    if table_start_row and contract_items:
+        col_b_idx = 2
+        for i, item in enumerate(contract_items):
+            row_idx = table_start_row + i
+            cell = ws.cell(row=row_idx, column=col_b_idx)
+            product_name = None
+            if 'Product__r' in item and item['Product__r']:
+                product_name = item['Product__r'].get('Name')
+            current_desc = str(cell.value) if cell.value else ""
+            if product_name and current_desc:
+                match = re.match(r"^([^\d\(]+)", product_name)
+                if match:
+                    bold_target = match.group(1).strip()
+                    if bold_target and bold_target in current_desc:
+                        start_idx = current_desc.find(bold_target)
+                        if start_idx != -1:
+                            parts = []
+                            if start_idx > 0:
+                                parts.append(current_desc[:start_idx])
+                            parts.append(TextBlock(InlineFont(b=True), bold_target))
+                            end_idx = start_idx + len(bold_target)
+                            if end_idx < len(current_desc):
+                                parts.append(current_desc[end_idx:])
+                            cell.value = CellRichText(parts)
+
+    if table_start_row and contract_items:
+        col_b_idx = 2
+        start_merge_row = table_start_row
+        current_val = str(ws.cell(row=start_merge_row, column=col_b_idx).value)
+        for i in range(1, len(contract_items)):
+            row_idx = table_start_row + i
+            cell_val = str(ws.cell(row=row_idx, column=col_b_idx).value)
+            if cell_val == current_val:
+                continue
+            else:
+                if row_idx - 1 > start_merge_row:
+                    ws.merge_cells(start_row=start_merge_row, start_column=col_b_idx, end_row=row_idx-1, end_column=col_b_idx)
+                    cell = ws.cell(row=start_merge_row, column=col_b_idx)
+                    cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+                start_merge_row = row_idx
+                current_val = cell_val
+        last_row = table_start_row + len(contract_items) - 1
+        if last_row > start_merge_row:
+             ws.merge_cells(start_row=start_merge_row, start_column=col_b_idx, end_row=last_row, end_column=col_b_idx)
+             ws.cell(row=start_merge_row, column=col_b_idx).alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+
+    if table_start_row and contract_items:
+        for i in range(len(contract_items)):
+            row_idx = table_start_row + i
+            cell = ws.cell(row=row_idx, column=12)
+            if cell.value:
+                try:
+                    val_str = str(cell.value).replace(',', '')
+                    cell.value = float(val_str)
+                    cell.number_format = '#,##0.00 "USD"'
+                except ValueError:
+                    pass 
+            cell = ws.cell(row=row_idx, column=13)
+            if cell.value:
+                try:
+                    val_str = str(cell.value).replace(',', '')
+                    cell.value = float(val_str)
+                    cell.number_format = '#,##0.00'
+                except ValueError:
+                    pass
+
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.value and isinstance(cell.value, str) and "All prices quoted herein" in cell.value:
+                ws.row_dimensions[cell.row].height = 50
+                ws.row_dimensions[cell.row + 1].height = 50
+                break
+
+    output_dir = get_output_directory()
+    file_name = f"PI_{contract_data.get('Name')}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    file_path = output_dir / file_name
+    wb.save(str(file_path))
+    return str(file_path)
+
+@app.get("/generate-pi-no-discount/{contract_id}")
+async def generate_pi_no_discount_endpoint(contract_id: str):
+    try:
+        template_path = os.getenv('PI_TEMPLATE_PATH', 'templates/proforma_invoice_template_new.xlsx')
+        if not os.path.exists(template_path):
+             # Fallback
+             template_path = 'templates/proforma_invoice_template_no_discount.xlsx'
+             if not os.path.exists(template_path):
+                 raise HTTPException(status_code=404, detail=f"PI Template not found")
+
+        file_path = generate_pi_no_discount_logic(contract_id, template_path)
+        return FileResponse(file_path, filename=os.path.basename(file_path), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- Quote No Discount Logic ---
+def expand_table_quote(ws, start_tag, end_tag, data):
+    """
+    Expand a single row table based on start and end tags (Quote version with strict types).
+    """
+    table_row_idx = None
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.value and isinstance(cell.value, str):
+                if start_tag in cell.value:
+                    table_row_idx = cell.row
+                    break
+        if table_row_idx:
+            break
+            
+    if not table_row_idx:
+        print(f"Warning: Table tags {start_tag} not found.")
+        return None
+
+    if not data:
+        for col in range(1, ws.max_column + 1):
+            cell = ws.cell(row=table_row_idx, column=col)
+            if cell.value and isinstance(cell.value, str):
+                cell.value = cell.value.replace(start_tag, "").replace(end_tag, "")
+        return table_row_idx
+
+    num_rows = len(data)
+    add_rows = max(0, num_rows - 1)
+    
+    max_col = ws.max_column
+    row_style = []
+    for col in range(1, max_col + 1):
+        cell = ws.cell(row=table_row_idx, column=col)
+        row_style.append(style_copy(cell._style) if cell.has_style else None)
+    
+    row_height = ws.row_dimensions[table_row_idx].height
+
+    merges_to_shift = []
+    for mr in ws.merged_cells.ranges:
+        if mr.min_row > table_row_idx:
+            merges_to_shift.append((mr.min_row, mr.max_row, mr.min_col, mr.max_col))
+    
+    for mr in merges_to_shift:
+        rng = f"{get_column_letter(mr[2])}{mr[0]}:{get_column_letter(mr[3])}{mr[1]}"
+        ws.unmerge_cells(rng)
+
+    if add_rows > 0:
+        ws.insert_rows(table_row_idx + 1, amount=add_rows)
+        for offset in range(1, add_rows + 1):
+            r = table_row_idx + offset
+            if row_height is not None:
+                ws.row_dimensions[r].height = row_height
+            for col in range(1, max_col + 1):
+                dst = ws.cell(row=r, column=col)
+                src_val = ws.cell(row=table_row_idx, column=col).value
+                dst.value = src_val
+                st = row_style[col - 1]
+                if st is not None:
+                    dst._style = style_copy(st)
+                    
+    for mr in merges_to_shift:
+        new_min_row = mr[0] + add_rows
+        new_max_row = mr[1] + add_rows
+        rng = f"{get_column_letter(mr[2])}{new_min_row}:{get_column_letter(mr[3])}{new_max_row}"
+        ws.merge_cells(rng)
+                    
+    for i, record in enumerate(data):
+        current_row_idx = table_row_idx + i
+        for col in range(1, ws.max_column + 1):
+            cell = ws.cell(row=current_row_idx, column=col)
+            if cell.value and isinstance(cell.value, str):
+                cell_val = cell.value.replace(start_tag, "").replace(end_tag, "")
+                
+                # --- Enforce int/float types for specific fields ---
+                int_fields = [
+                    "L_Quote__c", "W_Quote__c", "H_Quote__c", 
+                    "PCS_Quote__c", "Crates_Quote__c", "Packing_Quote__c", 
+                    "Quote_Line_Item_Number_Quote__c"
+                ]
+                float_fields = ["m2__c", "m3__c", "Tons__c", "Cont__c"]
+                
+                is_numeric_cell = False
+                for key, value in record.items():
+                    placeholder = f"{{{{{key}}}}}"
+                    if cell_val.strip() == placeholder:
+                        if key in int_fields and value is not None:
+                            try:
+                                cell.value = int(float(value))
+                                is_numeric_cell = True
+                            except (ValueError, TypeError):
+                                pass
+                        elif key in float_fields and value is not None:
+                            try:
+                                cell.value = float(value)
+                                cell.number_format = '#,##0.00'
+                                is_numeric_cell = True
+                            except (ValueError, TypeError):
+                                pass
+                        if is_numeric_cell:
+                            break
+                
+                if is_numeric_cell:
+                    continue
+                # --------------------------------------------------------
+
+                for key, value in record.items():
+                    placeholder = f"{{{{{key}}}}}"
+                    if placeholder in cell_val:
+                        cell_val = cell_val.replace(placeholder, str(value) if value is not None else "")
+                        
+                    pattern = f"\\{{{{{key}\\\\#(.*?)\\}}}}"
+                    matches = re.findall(pattern, cell_val)
+                    for fmt in matches:
+                        try:
+                            if value is not None:
+                                if isinstance(value, (int, float)):
+                                    if "#,##0.##" in fmt:
+                                         formatted_val = "{:,.2f}".format(value)
+                                    else:
+                                         formatted_val = str(value)
+                                    cell_val = cell_val.replace(f"{{{{{key}\\#{fmt}}}}}", formatted_val)
+                                else:
+                                    cell_val = cell_val.replace(f"{{{{{key}\\#{fmt}}}}}", str(value))
+                            else:
+                                cell_val = cell_val.replace(f"{{{{{key}\\#{fmt}}}}}", "")
+                        except:
+                             cell_val = cell_val.replace(f"{{{{{key}\\#{fmt}}}}}", str(value))
+                
+                cell.value = cell_val
+    
+    return table_row_idx
+
+def generate_quote_no_discount_logic(quote_id, template_path):
+    sf = get_salesforce_connection()
+    
+    query = f"""
+    SELECT Id, IsDeleted, LineNumber, CreatedDate, LastModifiedDate, SystemModstamp, LastViewedDate, LastReferencedDate, Quantity, UnitPrice, Discount, HasRevenueSchedule, HasQuantitySchedule, Description, ServiceDate, SortOrder, HasSchedule, ListPrice, Subtotal, TotalPrice, Product_Description__c, Length__c, Width__c, Height__c, Line_Number__c, Packing__c, Total_Price_to_sumup__c, Cont__c, Crates__c, Tons__c, Container_Weight_Regulations__c, Discount__c, Unit_Price__c, L_x_W_x_H__c, ml_x_m2_x_m3__c, Crates_and_Packing__c, Unit_Price_USD__c, ChargeUnit__c, Product_Name__c, m2__c, m3__c, ml__c, Total_Price_USD__c, L_Quote__c, W_Quote__c, H_Quote__c, PCS_Quote__c, Crates_Quote__c, Charge_Unit_Quote__c, Packing_Quote__c, Quote_Line_Item_Number_Quote__c, Opportunity_Id__c, Quote_display_name__c, Quote.Id, Quote.OwnerId, Quote.IsDeleted, Quote.Name, Quote.RecordTypeId, Quote.CreatedDate, Quote.CreatedById, Quote.LastModifiedDate, Quote.LastModifiedById, Quote.SystemModstamp, Quote.LastViewedDate, Quote.LastReferencedDate, Quote.OpportunityId, Quote.Pricebook2Id, Quote.ContactId, Quote.QuoteNumber, Quote.IsSyncing, Quote.ShippingHandling, Quote.Tax, Quote.Status, Quote.ExpirationDate, Quote.Description, Quote.Subtotal, Quote.TotalPrice, Quote.LineItemCount, Quote.BillingStreet, Quote.BillingCity, Quote.BillingState, Quote.BillingPostalCode, Quote.BillingCountry, Quote.BillingLatitude, Quote.BillingLongitude, Quote.BillingGeocodeAccuracy, Quote.BillingAddress, Quote.ShippingStreet, Quote.ShippingCity, Quote.ShippingState, Quote.ShippingPostalCode, Quote.ShippingCountry, Quote.ShippingLatitude, Quote.ShippingLongitude, Quote.ShippingGeocodeAccuracy, Quote.ShippingAddress, Quote.QuoteToStreet, Quote.QuoteToCity, Quote.QuoteToState, Quote.QuoteToPostalCode, Quote.QuoteToCountry, Quote.QuoteToLatitude, Quote.QuoteToLongitude, Quote.QuoteToGeocodeAccuracy, Quote.QuoteToAddress, Quote.AdditionalStreet, Quote.AdditionalCity, Quote.AdditionalState, Quote.AdditionalPostalCode, Quote.AdditionalCountry, Quote.AdditionalLatitude, Quote.AdditionalLongitude, Quote.AdditionalGeocodeAccuracy, Quote.AdditionalAddress, Quote.BillingName, Quote.ShippingName, Quote.QuoteToName, Quote.AdditionalName, Quote.Email, Quote.Phone, Quote.Fax, Quote.ContractId, Quote.AccountId, Quote.Discount, Quote.GrandTotal, Quote.CanCreateQuoteLineItems, Quote.Sub_Total_USD__c, Quote.Fumigation__c, Quote.Total_Crates__c, Quote.Total_m3__c, Quote.Total_Tons__c, Quote.Total_Conts__c, Quote.REMARK_NUMBER_ON_DOCUMENTS__c, Quote.Packing__c, Quote.Shipping_Schedule__c, Quote.Port_of_Discharge__c, Quote.Export_Route_Carrier__c, Quote.In_words__c, Quote.Discount__c, Quote.Total_Price_USD__c, Quote.Total_Quote_Line_Items__c, Quote.Port_of_Origin__c, Quote.Stockyard__c, Quote.Created_Date__c, Quote.Discount_Amount__c, Quote.Is_new_quote__c, Quote.First_approved_by__c, Quote.Final_approved_by__c, Quote.Account_approved_pricebook__c, Quote.Is_approved__c, Quote.Terms_of_Sale__c, Quote.Terms_of_Payment__c, Quote.Incoterms__c 
+    FROM QuoteLineItem 
+    WHERE QuoteId = '{quote_id}' 
+    ORDER BY Quote_Line_Item_Number_Quote__c ASC
+    """
+    
+    result = sf.query_all(query)
+    if not result['records']:
+        # Try fetching just the Quote
+        q_res = sf.query(f"SELECT Id, Name FROM Quote WHERE Id = '{quote_id}'")
+        if q_res['records']:
+            quote_data = q_res['records'][0]
+            quote_items = []
+        else:
+            raise ValueError(f"Quote not found: {quote_id}")
+    else:
+        quote_items = result['records']
+        first_item = quote_items[0]
+        if 'Quote' in first_item and first_item['Quote']:
+            quote_data = first_item['Quote']
+        else:
+            raise ValueError("Quote data missing in line items.")
+
+    full_data = {}
+    for k, v in quote_data.items():
+        full_data[f"Quote.{k}"] = v
+        
+    account_id = quote_data.get('AccountId')
+    if account_id:
+        acc_fields = ["Name", "BillingStreet", "BillingCity", "BillingPostalCode", "BillingCountry", "Phone", "Fax__c", "VAT__c"]
+        try:
+            acc = sf.Account.get(account_id)
+            for k in acc_fields:
+                full_data[f"Quote.Account.{k}"] = acc.get(k)
+        except Exception as e:
+            print(f"Error fetching account: {e}")
+    
+    for idx, item in enumerate(quote_items):
+        item['Quote_Line_Item_Number_Quote__c'] = idx + 1
+    
+    wb = openpyxl.load_workbook(template_path)
+    ws = wb.active
+    
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.value and isinstance(cell.value, str):
+                val = cell.value
+                if_pattern = r"\{\{#if\s+([\w\.]+)\s+'(==|contains)'\s+'([^']+)'\}\}(.*?)\{\{else\}\}(.*?)\{\{/if\}\}"
+                if_matches = re.findall(if_pattern, val)
+                for match in if_matches:
+                    key, operator, target_val, true_text, false_text = match
+                    full_match_str = f"{{{{#if {key} '{operator}' '{target_val}'}}}}{true_text}{{{{else}}}}{false_text}{{{{/if}}}}"
+                    
+                    actual_val = full_data.get(key)
+                    if actual_val is None:
+                        actual_val = ""
+                    else:
+                        actual_val = str(actual_val)
+                        
+                    condition_met = False
+                    if operator == '==':
+                        condition_met = actual_val.lower() == target_val.lower()
+                    elif operator == 'contains':
+                        condition_met = target_val.lower() in actual_val.lower()
+                        
+                    if condition_met:
+                        val = val.replace(full_match_str, true_text)
+                    else:
+                        val = val.replace(full_match_str, false_text)
+
+                float_fields = [
+                    "{{Quote.Total_Crates__c}}",
+                    "{{Quote.Total_m3__c}}",
+                    "{{Quote.Total_Tons__c}}",
+                    "{{Quote.Total_Conts__c}}",
+                    "{{Quote.Sub_Total_USD__c\\# #,##0.##}}",
+                    "{{Quote.Total_Price_USD__c\\# #,##0.##}}"
+                ]
+                
+                is_float_field = False
+                for field in float_fields:
+                    if field in val:
+                        key_part = field.replace("{{", "").replace("}}", "").split("\\#")[0]
+                        value = full_data.get(key_part)
+                        if value is not None:
+                            try:
+                                cell.value = float(value)
+                                cell.number_format = '#,##0.00'
+                                is_float_field = True
+                            except ValueError:
+                                pass
+                        break
+                
+                if is_float_field:
+                    continue
+
+                for key, value in full_data.items():
+                    placeholder = f"{{{{{key}}}}}"
+                    if placeholder in val:
+                        val = val.replace(placeholder, str(value) if value is not None else "")
+                    
+                    pattern = f"\\{{{{{key}\\\\#(.*?)\\}}}}"
+                    matches = re.findall(pattern, val)
+                    for fmt in matches:
+                         if value is not None and isinstance(value, (int, float)):
+                             if "#,##0.##" in fmt:
+                                 formatted_val = "{:,.2f}".format(value)
+                             else:
+                                 formatted_val = str(value)
+                             val = val.replace(f"{{{{{key}\\#{fmt}}}}}", formatted_val)
+                         else:
+                             val = val.replace(f"{{{{{key}\\#{fmt}}}}}", str(value) if value is not None else "")
+                
+                cell.value = val
+
+    table_start_row = expand_table_quote(ws, "{{TableStart:GetQuoteLine}}", "{{TableEnd:GetQuoteLine}}", quote_items)
+    if table_start_row and quote_items:
+        col_b_idx = 2
+        for i, item in enumerate(quote_items):
+            row_idx = table_start_row + i
+            cell = ws.cell(row=row_idx, column=col_b_idx)
+            product_name = item.get('Product_Name__c')
+            current_desc = str(cell.value) if cell.value else ""
+            if product_name and current_desc:
+                match = re.match(r"^([^\d\(]+)", product_name)
+                if match:
+                    bold_target = match.group(1).strip()
+                    if bold_target and bold_target in current_desc:
+                        start_idx = current_desc.find(bold_target)
+                        if start_idx != -1:
+                            parts = []
+                            if start_idx > 0:
+                                parts.append(current_desc[:start_idx])
+                            parts.append(TextBlock(InlineFont(b=True), bold_target))
+                            end_idx = start_idx + len(bold_target)
+                            if end_idx < len(current_desc):
+                                parts.append(current_desc[end_idx:])
+                            cell.value = CellRichText(parts)
+
+    if table_start_row and quote_items:
+        col_b_idx = 2
+        start_merge_row = table_start_row
+        current_val = str(ws.cell(row=start_merge_row, column=col_b_idx).value)
+        for i in range(1, len(quote_items)):
+            row_idx = table_start_row + i
+            cell_val = str(ws.cell(row=row_idx, column=col_b_idx).value)
+            if cell_val == current_val:
+                continue
+            else:
+                if row_idx - 1 > start_merge_row:
+                    ws.merge_cells(start_row=start_merge_row, start_column=col_b_idx, end_row=row_idx-1, end_column=col_b_idx)
+                    ws.cell(row=start_merge_row, column=col_b_idx).alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+                start_merge_row = row_idx
+                current_val = cell_val
+        last_row = table_start_row + len(quote_items) - 1
+        if last_row > start_merge_row:
+             ws.merge_cells(start_row=start_merge_row, start_column=col_b_idx, end_row=last_row, end_column=col_b_idx)
+             ws.cell(row=start_merge_row, column=col_b_idx).alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+ 
+    if table_start_row and quote_items:
+        for i in range(len(quote_items)):
+            row_idx = table_start_row + i
+            cell = ws.cell(row=row_idx, column=12)
+            if cell.value:
+                try:
+                    val_str = str(cell.value).replace(',', '')
+                    cell.value = float(val_str)
+                    cell.number_format = '#,##0.00 "USD"'
+                except ValueError:
+                    pass 
+            cell = ws.cell(row=row_idx, column=13)
+            if cell.value:
+                try:
+                    val_str = str(cell.value).replace(',', '')
+                    cell.value = float(val_str)
+                    cell.number_format = '#,##0.00'
+                except ValueError:
+                    pass
+
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.value and isinstance(cell.value, str) and "All prices quoted herein" in cell.value:
+                ws.row_dimensions[cell.row].height = 50
+                ws.row_dimensions[cell.row + 1].height = 50
+                break
+
+    output_dir = get_output_directory()
+    file_name = f"Quote_{quote_data.get('Name')}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    file_path = output_dir / file_name
+    wb.save(str(file_path))
+    return str(file_path)
+
+@app.get("/generate-quote-no-discount/{quote_id}")
+async def generate_quote_no_discount_endpoint(quote_id: str):
+    try:
+        template_path = os.getenv('QUOTE_TEMPLATE_PATH', 'templates/quotation_template_no_discount.xlsx')
+        if not os.path.exists(template_path):
+             raise HTTPException(status_code=404, detail=f"Quote Template not found")
+
+        file_path = generate_quote_no_discount_logic(quote_id, template_path)
+        return FileResponse(file_path, filename=os.path.basename(file_path), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- Production Order Logic ---
+def get_production_order_data(sf, contract_id):
+    if not sf:
+        return None, None
+
+    contract_query = f"""
+        SELECT Id, Production_Order_Number__c, Name, CreatedDate, Port_of_Origin__c, 
+               Port_of_Discharge__c, Stockyard__c, Total_Pcs_PO__c, Total_Crates__c, 
+               Total_m2__c, Total_m3__c, Total_Tons__c, Total_Conts__c
+        FROM Contract__c 
+        WHERE Id = '{contract_id}'
+    """
+    try:
+        contract_res = sf.query(contract_query)
+        contract_data = contract_res['records'][0] if contract_res['totalSize'] > 0 else {}
+    except Exception as e:
+        print(f"Error querying Contract: {e}")
+        contract_data = {}
+
+    products_query = f"""
+        SELECT Id, IsDeleted, Name, CreatedDate, LastModifiedDate, SystemModstamp, LastActivityDate, LastViewedDate, LastReferencedDate, Charge_Unit__c, Cont__c, Container_Weight_Regulations__c, Crates__c, Height__c, Length__c, List_Price__c, Quantity__c, Width__c, m2__c, m3__c, ml__c, Packing__c, Sales_Price__c, Tons__c, Total_Price_USD__c, Actual_Cont__c, Actual_Crates__c, Actual_Quantity__c, Actual_Tons__c, Actual_m2__c, Actual_m3__c, Actual_ml__c, Product_Description__c, Actual_Total_Price_USD__c, Pending_Cont__c, Pending_Crates__c, Pending_m2__c, Pending_m3__c, Pending_ml__c, Pending_Quantity__c, Pending_Amount_USD__c, Pending_Tons__c, Delivery_Date__c, Planned_Quantity__c, Total_Child_Order_Actual_Quantity__c, Pending_Quantity_for_child_2__c, Delivered_date__c, Line_number__c, Line_item_no_for_print__c, SKU__c, Vietnamese_Description__c, Order__r.Name, Contract_PI__r.Id 
+        FROM Order_Product__c 
+        WHERE Contract_PI__r.Id = '{contract_id}' 
+        ORDER BY Line_number__c ASC
+    """
+    try:
+        products_res = sf.query(products_query)
+        products_data = products_res['records']
+    except Exception as e:
+        print(f"Error querying Order Products: {e}")
+        products_data = []
+
+    return contract_data, products_data
+
+def generate_production_order_logic(contract_id, template_path):
+    sf = get_salesforce_connection()
+    contract_data, products_data = get_production_order_data(sf, contract_id)
+    
+    if not contract_data:
+        raise ValueError(f"Contract not found: {contract_id}")
+
+    wb = openpyxl.load_workbook(template_path)
+    ws = wb.active
+
+    flat_data = {}
+    if contract_data:
+        for k, v in contract_data.items():
+            flat_data[f"Contract__c.{k}"] = v
+            if "Date" in k and v:
+                try:
+                    dt = datetime.datetime.strptime(v[:10], "%Y-%m-%d")
+                    flat_data[f"Contract__c.{k}\\@dd/MM/yyyy"] = dt.strftime("%d/%m/%Y")
+                except:
+                    pass
+
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.value and isinstance(cell.value, str):
+                val = cell.value
+                matches = re.findall(r"\{\{([^\}]+)\}\}", val)
+                for match in matches:
+                    key_part = match.split('\\')[0].strip()
+                    format_part = None
+                    if '\\@' in match:
+                        format_part = match.split('\\@')[1].strip()
+                    
+                    if key_part in flat_data:
+                        replace_val = flat_data[key_part]
+                        if replace_val is None:
+                            replace_val = ""
+                        
+                        if format_part and replace_val:
+                            try:
+                                val_str = str(replace_val)
+                                if 'T' in val_str:
+                                    dt = datetime.datetime.strptime(val_str.split('+')[0].split('.')[0], "%Y-%m-%dT%H:%M:%S")
+                                else:
+                                    dt = datetime.datetime.strptime(val_str, "%Y-%m-%d")
+                                py_format = format_part.replace('dd', '%d').replace('MM', '%m').replace('yyyy', '%Y')
+                                replace_val = dt.strftime(py_format)
+                            except Exception as e:
+                                replace_val = str(replace_val).split('T')[0]
+
+                        total_fields = [
+                            "Contract__c.Total_Pcs_PO__c",
+                            "Contract__c.Total_Crates__c",
+                            "Contract__c.Total_m2__c",
+                            "Contract__c.Total_m3__c",
+                            "Contract__c.Total_Tons__c",
+                            "Contract__c.Total_Conts__c"
+                        ]
+                        if key_part in total_fields and replace_val is not None:
+                            try:
+                                float_val = float(replace_val)
+                                if float_val.is_integer():
+                                    replace_val = int(float_val)
+                                else:
+                                    replace_val = float_val
+                            except (ValueError, TypeError):
+                                pass
+
+                        val = val.replace(f"{{{{{match}}}}}", str(replace_val))
+                        cell.alignment = Alignment(wrap_text=True, vertical='center', horizontal=cell.alignment.horizontal if cell.alignment else 'left')
+                        
+                        val_str = str(replace_val)
+                        explicit_lines = val_str.count('\n') + 1
+                        wrap_lines = (len(val_str) // 20) + 1 
+                        est_lines = max(explicit_lines, wrap_lines)
+                        if est_lines > 1:
+                            current_height = ws.row_dimensions[cell.row].height or 15
+                            ws.row_dimensions[cell.row].height = max(current_height, est_lines * 20)
+
+                try:
+                    clean_val = str(val).replace(',', '')
+                    float_val = float(clean_val)
+                    if float_val.is_integer():
+                         cell.value = int(float_val)
+                    else:
+                         cell.value = float_val
+                except ValueError:
+                    cell.value = val
+
+    table_start_row = None
+    for r in range(1, ws.max_row + 1):
+        cell_val = ws.cell(row=r, column=1).value
+        if cell_val and "{{TableStart:ProPlanProduct}}" in str(cell_val):
+            table_start_row = r
+            break
+    
+    if table_start_row and products_data:
+        num_items = len(products_data)
+        if num_items > 1:
+            ws.insert_rows(table_start_row + 1, amount=num_items - 1)
+            
+        thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+        align_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        align_left = Alignment(horizontal='left', vertical='center', wrap_text=True)
+
+        if num_items > 1:
+            for i in range(1, num_items):
+                target_row = table_start_row + i
+                source_row = table_start_row
+                for col in range(1, 16):
+                    source_cell = ws.cell(row=source_row, column=col)
+                    target_cell = ws.cell(row=target_row, column=col)
+                    if source_cell.border: target_cell.border = style_copy(source_cell.border)
+                    if source_cell.font: target_cell.font = style_copy(source_cell.font)
+                    if source_cell.alignment: target_cell.alignment = style_copy(source_cell.alignment)
+                    if source_cell.fill: target_cell.fill = style_copy(source_cell.fill)
+                    if source_cell.number_format: target_cell.number_format = style_copy(source_cell.number_format)
+
+        ws.cell(row=table_start_row, column=1).value = ""
+
+        for i, item in enumerate(products_data):
+            row_idx = table_start_row + i
+            for col in range(1, 16):
+                cell = ws.cell(row=row_idx, column=col)
+                is_merged = False
+                target_range = None
+                for merged_range in ws.merged_cells.ranges:
+                    if cell.coordinate in merged_range:
+                        is_merged = True
+                        target_range = merged_range
+                        break
+                if is_merged and target_range:
+                    try:
+                        ws.unmerge_cells(str(target_range))
+                    except KeyError:
+                        pass
+                cell = ws.cell(row=row_idx, column=col)
+                cell.border = thin_border
+
+            item_map = {
+                "Line_number__c": item.get("Line_number__c"),
+                "Order__r.Name": item.get("Order__r", {}).get("Name") if item.get("Order__r") else "",
+                "SKU__c": item.get("SKU__c"),
+                "Vietnamese_Description__c": item.get("Vietnamese_Description__c"),
+                "Length": item.get("Length__c"),
+                "Width": item.get("Width__c"),
+                "Height": item.get("Height__c"),
+                "Quantity": item.get("Quantity__c"),
+                "Crates__c": item.get("Crates__c"),
+                "m2__c": item.get("m2__c"),
+                "m3__c": item.get("m3__c"),
+                "Tons__c": item.get("Tons__c"),
+                "Cont__c": item.get("Cont__c"),
+                "Packing__c": item.get("Packing__c"),
+                "Delivery_Date__c": item.get("Delivery_Date__c")
+            }
+
+            ws.cell(row=row_idx, column=1).value = i + 1
+            ws.cell(row=row_idx, column=1).alignment = align_center
+            ws.cell(row=row_idx, column=2).value = item_map["Order__r.Name"]
+            ws.cell(row=row_idx, column=2).alignment = align_center
+            ws.cell(row=row_idx, column=3).value = item_map["SKU__c"]
+            ws.cell(row=row_idx, column=3).alignment = align_left
+            
+            desc_val = item_map["Vietnamese_Description__c"] or ""
+            if desc_val and '-' in str(desc_val):
+                parts = str(desc_val).split('-', 1)
+                bold_part = parts[0]
+                normal_part = '-' + parts[1]
+                rich_text = CellRichText(
+                    TextBlock(InlineFont(b=True, rFont='Times New Roman', sz=11), bold_part),
+                    TextBlock(InlineFont(b=False, rFont='Times New Roman', sz=11), normal_part)
+                )
+                ws.cell(row=row_idx, column=4).value = rich_text
+            else:
+                ws.cell(row=row_idx, column=4).value = desc_val
+            ws.cell(row=row_idx, column=4).alignment = align_left
+            
+            desc_str = str(desc_val)
+            explicit_lines = desc_str.count('\n') + 1
+            wrap_lines = (len(desc_str) // 25) + 1
+            order_str = str(item_map["Order__r.Name"])
+            order_lines = (len(order_str) // 10) + 1
+            max_lines = max(explicit_lines, wrap_lines, order_lines)
+            if max_lines > 1:
+                ws.row_dimensions[row_idx].height = max_lines * 20
+            else:
+                ws.row_dimensions[row_idx].height = 20
+            
+            ws.cell(row=row_idx, column=5).value = item_map["Length"]
+            ws.cell(row=row_idx, column=6).value = item_map["Width"]
+            ws.cell(row=row_idx, column=7).value = item_map["Height"]
+            ws.cell(row=row_idx, column=8).value = item_map["Quantity"]
+            ws.cell(row=row_idx, column=9).value = item_map["Crates__c"]
+            
+            m2_val = item_map["m2__c"]
+            if m2_val is not None:
+                ws.cell(row=row_idx, column=10).value = float(m2_val)
+                ws.cell(row=row_idx, column=10).number_format = '0.00'
+            
+            m3_val = item_map["m3__c"]
+            if m3_val is not None:
+                ws.cell(row=row_idx, column=11).value = float(m3_val)
+                ws.cell(row=row_idx, column=11).number_format = '0.00'
+
+            ws.cell(row=row_idx, column=12).value = item_map["Tons__c"]
+            ws.cell(row=row_idx, column=13).value = item_map["Cont__c"]
+            
+            for col in range(5, 14):
+                ws.cell(row=row_idx, column=col).alignment = align_center
+
+            packing_val = item_map["Packing__c"]
+            if packing_val:
+                try:
+                    ws.cell(row=row_idx, column=14).value = float(packing_val)
+                    ws.cell(row=row_idx, column=14).number_format = '0.0 "viên/kiện"'
+                except (ValueError, TypeError):
+                    ws.cell(row=row_idx, column=14).value = f"{packing_val}\nviên/kiện"
+                ws.cell(row=row_idx, column=14).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            
+            del_date = item_map["Delivery_Date__c"]
+            if del_date:
+                try:
+                    dt = datetime.datetime.strptime(del_date[:10], "%Y-%m-%d")
+                    ws.cell(row=row_idx, column=15).value = dt.strftime("%d/%m/%Y")
+                except:
+                    ws.cell(row=row_idx, column=15).value = del_date
+            ws.cell(row=row_idx, column=15).alignment = align_center
+            for col in range(1, 16):
+                ws.cell(row=row_idx, column=col).border = thin_border
+
+    if products_data:
+        start_row = 13
+        end_row = start_row + len(products_data) - 1
+        merge_start_row = start_row
+        current_val = ws.cell(row=start_row, column=4).value
+        for r in range(start_row + 1, end_row + 2):
+            val = ws.cell(row=r, column=4).value if r <= end_row else None
+            if val != current_val:
+                if r - 1 > merge_start_row:
+                    ws.merge_cells(start_row=merge_start_row, start_column=4, end_row=r-1, end_column=4)
+                    ws.cell(row=merge_start_row, column=4).alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+                merge_start_row = r
+                current_val = val
+
+    if products_data:
+        start_row = 13
+        end_row = start_row + len(products_data) - 1
+        merge_start_row = start_row
+        current_val = ws.cell(row=start_row, column=15).value
+        for r in range(start_row + 1, end_row + 2):
+            val = ws.cell(row=r, column=15).value if r <= end_row else None
+            if val != current_val:
+                if r - 1 > merge_start_row:
+                    ws.merge_cells(start_row=merge_start_row, start_column=15, end_row=r-1, end_column=15)
+                    ws.cell(row=merge_start_row, column=15).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                merge_start_row = r
+                current_val = val
+
+    output_dir = get_output_directory()
+    file_name = f"Production_Order_{contract_data.get('Production_Order_Number__c', contract_data.get('Name'))}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    file_path = output_dir / file_name
+    wb.save(str(file_path))
+    return str(file_path)
+
+@app.get("/generate-production-order/{contract_id}")
+async def generate_production_order_endpoint(contract_id: str):
+    try:
+        template_path = os.getenv('PO_TEMPLATE_PATH', 'templates/production_order_template.xlsx')
+        if not os.path.exists(template_path):
+             raise HTTPException(status_code=404, detail=f"Production Order Template not found")
+
+        file_path = generate_production_order_logic(contract_id, template_path)
+        return FileResponse(file_path, filename=os.path.basename(file_path), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
