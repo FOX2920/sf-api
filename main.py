@@ -2449,6 +2449,26 @@ def generate_pi_no_discount_logic(contract_id, template_path):
                     else:
                         val = val.replace(full_match_str, false_text)
 
+                # --- NEW: Handle Discount Logic (Clear if 0) ---
+                if "{{Contract__c.Discount__c}}" in val or "{{Contract__c.Discount_Amount__c" in val:
+                    discount_val = full_data.get('Contract__c.Discount__c')
+                    discount_amt = full_data.get('Contract__c.Discount_Amount__c')
+                    
+                    # Check if essentially 0
+                    is_zero = True
+                    try:
+                        if discount_val and float(discount_val) != 0:
+                            is_zero = False
+                        if discount_amt and float(discount_amt) != 0:
+                            is_zero = False
+                    except:
+                        pass
+                        
+                    if is_zero:
+                        cell.value = ""
+                        continue
+                # -----------------------------------------------
+
                 float_fields = [
                     "{{Contract__c.Total_Crates__c}}",
                     "{{Contract__c.Total_m3__c}}",
@@ -2562,6 +2582,31 @@ def generate_pi_no_discount_logic(contract_id, template_path):
                     cell.number_format = '#,##0.00'
                 except ValueError:
                     pass
+
+    # Fill Surcharge Table
+    # The template uses {{TableStart:PISurcharge}}...{{TableEnd:PISurcharge}}
+    surcharge_query = f"""
+    SELECT Id, Name, Surcharge_amount_USD__c 
+    FROM Expense__c 
+    WHERE Contract_PI__r.Id = '{contract_id}' AND Surcharge_amount_USD__c != 0
+    """
+    
+    try:
+        surcharge_result = sf.query_all(surcharge_query)
+        surcharge_records = surcharge_result['records']
+    except Exception as e:
+        print(f"Error querying surcharge expenses: {e}")
+        surcharge_records = []
+
+    surcharge_items = []
+    if surcharge_records:
+        for item in surcharge_records:
+            surcharge_items.append({
+                "Name": item.get('Name'),
+                "Surcharge_amount_USD__c": item.get('Surcharge_amount_USD__c')
+            })
+
+    expand_table_pi(ws, "{{TableStart:PISurcharge}}", "{{TableEnd:PISurcharge}}", surcharge_items)
 
     for row in ws.iter_rows():
         for cell in row:
