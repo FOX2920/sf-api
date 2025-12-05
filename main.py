@@ -3137,6 +3137,7 @@ def generate_production_order_logic(contract_id, template_path):
     wb = openpyxl.load_workbook(template_path)
     ws = wb.active
 
+    # Flatten contract data
     flat_data = {}
     if contract_data:
         for k, v in contract_data.items():
@@ -3172,6 +3173,7 @@ def generate_production_order_logic(contract_id, template_path):
     flat_data['Contract__c.Total_Tons__c'] = total_tons
     flat_data['Contract__c.Total_Conts__c'] = total_conts
 
+    # Fill simple placeholders
     for row in ws.iter_rows():
         for cell in row:
             if cell.value and isinstance(cell.value, str):
@@ -3200,6 +3202,7 @@ def generate_production_order_logic(contract_id, template_path):
                             except Exception as e:
                                 replace_val = str(replace_val).split('T')[0]
 
+                        # Smart Float/Int Formatting for Totals
                         total_fields = [
                             "Contract__c.Total_Pcs_PO__c",
                             "Contract__c.Total_Crates__c",
@@ -3229,6 +3232,7 @@ def generate_production_order_logic(contract_id, template_path):
                             current_height = ws.row_dimensions[cell.row].height or 15
                             ws.row_dimensions[cell.row].height = max(current_height, est_lines * 20)
 
+                # Convert to number if possible
                 try:
                     clean_val = str(val).replace(',', '')
                     float_val = float(clean_val)
@@ -3239,6 +3243,7 @@ def generate_production_order_logic(contract_id, template_path):
                 except ValueError:
                     cell.value = val
 
+    # Find Table Start
     table_start_row = None
     for r in range(1, ws.max_row + 1):
         cell_val = ws.cell(row=r, column=1).value
@@ -3255,6 +3260,7 @@ def generate_production_order_logic(contract_id, template_path):
         align_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
         align_left = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
+        # Copy styles
         if num_items > 1:
             for i in range(1, num_items):
                 target_row = table_start_row + i
@@ -3270,8 +3276,11 @@ def generate_production_order_logic(contract_id, template_path):
 
         ws.cell(row=table_start_row, column=1).value = ""
 
+        # Fill data
         for i, item in enumerate(products_data):
             row_idx = table_start_row + i
+            
+            # Unmerge cells before writing
             for col in range(1, 16):
                 cell = ws.cell(row=row_idx, column=col)
                 is_merged = False
@@ -3378,51 +3387,11 @@ def generate_production_order_logic(contract_id, template_path):
                 except:
                     ws.cell(row=row_idx, column=15).value = del_date
             ws.cell(row=row_idx, column=15).alignment = align_center
+            
             for col in range(1, 16):
                 ws.cell(row=row_idx, column=col).border = thin_border
 
-        # ===== FIX: FILL TỔNG CỘNG ROW AFTER ALL PRODUCT ROWS =====
-        total_row = table_start_row + num_items
-        
-        # Find TỔNG CỘNG row (should be right after product rows)
-        for r in range(total_row, min(total_row + 5, ws.max_row + 1)):
-            for c in range(1, 6):
-                cell_val = ws.cell(row=r, column=c).value
-                if cell_val and "TỔNG CỘNG" in str(cell_val):
-                    total_row = r
-                    break
-            if ws.cell(row=r, column=4).value and "TỔNG CỘNG" in str(ws.cell(row=r, column=4).value):
-                break
-        
-        # Fill totals - based on screenshot, only fill Viên (H), M2 (J), Tons (L), Cont (M)
-        # Column H (8): Total Viên/Quantity
-        if total_pcs > 0:
-            ws.cell(row=total_row, column=8).value = int(total_pcs) if total_pcs == int(total_pcs) else total_pcs
-            ws.cell(row=total_row, column=8).alignment = align_center
-            ws.cell(row=total_row, column=8).border = thin_border
-        
-        # Column J (10): Total M2
-        if total_m2 > 0:
-            ws.cell(row=total_row, column=10).value = total_m2
-            ws.cell(row=total_row, column=10).number_format = '0.00'
-            ws.cell(row=total_row, column=10).alignment = align_center
-            ws.cell(row=total_row, column=10).border = thin_border
-        
-        # Column L (12): Total Tons
-        if total_tons > 0:
-            ws.cell(row=total_row, column=12).value = total_tons
-            ws.cell(row=total_row, column=12).number_format = '0.00'
-            ws.cell(row=total_row, column=12).alignment = align_center
-            ws.cell(row=total_row, column=12).border = thin_border
-        
-        # Column M (13): Total Containers
-        if total_conts > 0:
-            ws.cell(row=total_row, column=13).value = total_conts
-            ws.cell(row=total_row, column=13).number_format = '0.00'
-            ws.cell(row=total_row, column=13).alignment = align_center
-            ws.cell(row=total_row, column=13).border = thin_border
-        # =====================================
-
+    # Merge duplicate "TÊN HÀNG" (Column D / 4)
     if products_data:
         start_row = 13
         end_row = start_row + len(products_data) - 1
@@ -3437,6 +3406,7 @@ def generate_production_order_logic(contract_id, template_path):
                 merge_start_row = r
                 current_val = val
 
+    # Merge duplicate "THỜI GIAN GIAO HÀNG" (Column O / 15)
     if products_data:
         start_row = 13
         end_row = start_row + len(products_data) - 1
