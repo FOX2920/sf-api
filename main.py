@@ -3134,6 +3134,7 @@ def generate_production_order_logic(contract_id, template_path):
     if not contract_data:
         raise ValueError(f"Contract not found: {contract_id}")
 
+    # ===== BẮT ĐẦU LOGIC TỪ fill_template =====
     wb = openpyxl.load_workbook(template_path)
     ws = wb.active
 
@@ -3215,7 +3216,7 @@ def generate_production_order_logic(contract_id, template_path):
 
     # Fill Table
     table_start_row = None
-    total_row_template_idx = None # Thêm biến để lưu chỉ mục dòng Tổng Cộng template
+    total_row_template_idx = None
     
     for r in range(1, ws.max_row + 1):
         cell_val = ws.cell(row=r, column=1).value
@@ -3225,21 +3226,20 @@ def generate_production_order_logic(contract_id, template_path):
             total_row_template_idx = r
             
     if not table_start_row:
-        print("Error: Table start marker {{TableStart:ProPlanProduct}} not found.")
-        return str(template_path)
+        raise ValueError("Table start marker {{TableStart:ProPlanProduct}} not found.")
 
     num_items = len(products_data)
     
     if products_data:
-        # 1. Expand table (Nếu có nhiều hơn 1 sản phẩm)
+        # 1. Expand table
         if num_items > 1:
             ws.insert_rows(table_start_row + 1, amount=num_items - 1)
         
-        # Tính lại vị trí dòng Tổng Cộng mới
+        # Calculate new Total row position
         if total_row_template_idx:
             total_row = total_row_template_idx + (num_items - 1) if num_items > 0 else total_row_template_idx
         else:
-            total_row = table_start_row + num_items # Vị trí nếu không tìm thấy dòng tổng cộng
+            total_row = table_start_row + num_items
 
         # Define styles
         thin_border = Border(left=Side(style='thin'), 
@@ -3249,7 +3249,7 @@ def generate_production_order_logic(contract_id, template_path):
         align_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
         align_left = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
-        # 2. Copy styles (Giữ nguyên logic copy style)
+        # 2. Copy styles
         if num_items > 1:
             for i in range(1, num_items):
                 target_row = table_start_row + i
@@ -3276,7 +3276,7 @@ def generate_production_order_logic(contract_id, template_path):
         for i, item in enumerate(products_data):
             row_idx = table_start_row + i
             
-            # CRITICAL: Unmerge cells before writing (Giữ nguyên phần này)
+            # CRITICAL: Unmerge cells before writing
             for col in range(1, 16):
                 cell = ws.cell(row=row_idx, column=col)
                 is_merged = False
@@ -3294,7 +3294,7 @@ def generate_production_order_logic(contract_id, template_path):
                         pass
                 
                 cell = ws.cell(row=row_idx, column=col)
-                cell.border = thin_border 
+                cell.border = thin_border
 
             # Map item fields
             item_map = {
@@ -3309,7 +3309,7 @@ def generate_production_order_logic(contract_id, template_path):
             }
 
             # Write data - columns A through O
-            ws.cell(row=row_idx, column=1).value = i + 1 
+            ws.cell(row=row_idx, column=1).value = i + 1
             ws.cell(row=row_idx, column=1).alignment = align_center
             
             ws.cell(row=row_idx, column=2).value = item_map["Order__r.Name"]
@@ -3320,7 +3320,7 @@ def generate_production_order_logic(contract_id, template_path):
             
             desc_val = item_map["Vietnamese_Description__c"] or ""
             
-            # Handle Bold Text before Hyphen (Nếu là RichText, việc merge sẽ cần xử lý khác)
+            # Handle Bold Text before Hyphen
             if desc_val and '-' in str(desc_val):
                 parts = str(desc_val).split('-', 1)
                 bold_part = parts[0]
@@ -3336,10 +3336,10 @@ def generate_production_order_logic(contract_id, template_path):
             
             ws.cell(row=row_idx, column=4).alignment = align_left
             
-            # Auto-adjust row height (Giữ nguyên phần này)
+            # Auto-adjust row height
             desc_str = str(desc_val)
             explicit_lines = desc_str.count('\n') + 1
-            wrap_lines = (len(desc_str) // 25) + 1 
+            wrap_lines = (len(desc_str) // 25) + 1
             order_str = str(item_map["Order__r.Name"])
             order_lines = (len(order_str) // 10) + 1
             max_lines = max(explicit_lines, wrap_lines, order_lines)
@@ -3394,18 +3394,12 @@ def generate_production_order_logic(contract_id, template_path):
             for col in range(1, 16):
                 ws.cell(row=row_idx, column=col).border = thin_border
     
-    
-    # ----------------------------------------------------
     # KHẮC PHỤC LỖI TÍNH TỔNG CỘNG BẰNG CÔNG THỨC EXCEL
-    # ----------------------------------------------------
     if products_data and total_row_template_idx:
         first_data_row = table_start_row
         last_data_row = table_start_row + len(products_data) - 1
         
-        # Dòng Tổng Cộng mới đã được tính ở trên: total_row
-        
         # CRITICAL: Unmerge cells in Total row to ensure totals are visible
-        # Check columns H (8) to M (13)
         for col in range(8, 14):
             cell = ws.cell(row=total_row, column=col)
             is_merged = False
@@ -3451,9 +3445,7 @@ def generate_production_order_logic(contract_id, template_path):
             cell.font = Font(bold=True, name='Times New Roman', size=11)
             cell.border = thin_border
 
-    # ----------------------------------------------------
     # THÊM TÊN NGƯỜI SOẠN LỆNH & MERGE
-    # ----------------------------------------------------
     signer_row_idx = None
     for r in range(1, ws.max_row + 1):
         # Check Column I
@@ -3494,18 +3486,13 @@ def generate_production_order_logic(contract_id, template_path):
         cell.font = Font(name='Times New Roman', size=11)
         cell.alignment = Alignment(horizontal='center', vertical='center')
 
-    # ----------------------------------------------------
-    # KHẮC PHỤC LỖI MERGE CELL (Giữ nguyên logic merge)
-    # ----------------------------------------------------
-
+    # KHẮC PHỤC LỖI MERGE CELL
     # Hàm hỗ trợ lấy nội dung chuỗi (dùng để so sánh)
     def get_cell_content_for_comparison(cell):
         val = cell.value
         if isinstance(val, CellRichText):
-            # Lấy nội dung chuỗi thuần túy từ CellRichText
             return str(val)
         return str(val).strip() if val is not None else ""
-
 
     # Merge duplicate "TÊN HÀNG" (Column D / 4)
     if products_data:
@@ -3516,15 +3503,13 @@ def generate_production_order_logic(contract_id, template_path):
         current_val_str = get_cell_content_for_comparison(ws.cell(row=start_row, column=4))
         
         for r in range(start_row + 1, end_row + 2): 
-            val_str = get_cell_content_for_comparison(ws.cell(row=r, column=4)) if r <= end_row else "SENTINEL" # Sử dụng giá trị phân biệt
+            val_str = get_cell_content_for_comparison(ws.cell(row=r, column=4)) if r <= end_row else "SENTINEL"
             
             should_break = (val_str != current_val_str)
             
             if should_break:
                 if r - 1 > merge_start_row: 
-                    # Merge cells
                     ws.merge_cells(start_row=merge_start_row, start_column=4, end_row=r-1, end_column=4)
-                    # Giữ nguyên căn chỉnh cho ô đầu tiên sau khi merge
                     ws.cell(row=merge_start_row, column=4).alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
                 
                 merge_start_row = r
@@ -3545,22 +3530,19 @@ def generate_production_order_logic(contract_id, template_path):
             
             if should_break:
                 if r - 1 > merge_start_row:
-                    # Merge cells
                     ws.merge_cells(start_row=merge_start_row, start_column=15, end_row=r-1, end_column=15)
-                    # Giữ nguyên căn chỉnh cho ô đầu tiên sau khi merge
                     ws.cell(row=merge_start_row, column=15).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
                 
                 merge_start_row = r
                 current_val = val
 
+    # Save file
     output_dir = get_output_directory()
     file_name = f"Production_Order_{contract_data.get('Production_Order_Number__c', contract_data.get('Name'))}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     file_path = output_dir / file_name
     wb.save(str(file_path))
+    
     return str(file_path)
-
-
-
 @app.get("/generate-production-order/{contract_id}")
 async def generate_production_order_endpoint(contract_id: str):
     try:
