@@ -3137,41 +3137,18 @@ def generate_production_order_logic(contract_id, template_path):
     wb = openpyxl.load_workbook(template_path)
     ws = wb.active
 
-    # Flatten contract data
+    # Flatten contract data for easier replacement
     flat_data = {}
     if contract_data:
         for k, v in contract_data.items():
             flat_data[f"Contract__c.{k}"] = v
+            # Handle date formatting
             if "Date" in k and v:
                 try:
                     dt = datetime.datetime.strptime(v[:10], "%Y-%m-%d")
                     flat_data[f"Contract__c.{k}\\@dd/MM/yyyy"] = dt.strftime("%d/%m/%Y")
                 except:
                     pass
-
-    # --- Calculate Totals Locally ---
-    total_pcs = 0.0
-    total_crates = 0.0
-    total_m2 = 0.0
-    total_m3 = 0.0
-    total_tons = 0.0
-    total_conts = 0.0
-    
-    if products_data:
-        for item in products_data:
-            total_pcs += safe_float(item.get('Quantity__c'))
-            total_crates += safe_float(item.get('Crates__c'))
-            total_m2 += safe_float(item.get('m2__c'))
-            total_m3 += safe_float(item.get('m3__c'))
-            total_tons += safe_float(item.get('Tons__c'))
-            total_conts += safe_float(item.get('Cont__c'))
-            
-    flat_data['Contract__c.Total_Pcs_PO__c'] = total_pcs
-    flat_data['Contract__c.Total_Crates__c'] = total_crates
-    flat_data['Contract__c.Total_m2__c'] = total_m2
-    flat_data['Contract__c.Total_m3__c'] = total_m3
-    flat_data['Contract__c.Total_Tons__c'] = total_tons
-    flat_data['Contract__c.Total_Conts__c'] = total_conts
 
     # Fill simple placeholders
     for row in ws.iter_rows():
@@ -3203,7 +3180,6 @@ def generate_production_order_logic(contract_id, template_path):
                             except Exception as e:
                                 replace_val = str(replace_val).split('T')[0]
 
-                        # Smart Float/Int Formatting for Totals
                         total_fields = [
                             "Contract__c.Total_Pcs_PO__c", "Contract__c.Total_Crates__c", "Contract__c.Total_m2__c",
                             "Contract__c.Total_m3__c", "Contract__c.Total_Tons__c", "Contract__c.Total_Conts__c"
@@ -3230,7 +3206,6 @@ def generate_production_order_logic(contract_id, template_path):
                     else:
                         pass
                 
-                # Convert to number if possible
                 try:
                     clean_val = str(val).replace(',', '')
                     float_val = float(clean_val)
@@ -3240,7 +3215,7 @@ def generate_production_order_logic(contract_id, template_path):
 
     # Fill Table
     table_start_row = None
-    total_row_template_idx = None
+    total_row_template_idx = None # Thêm biến để lưu chỉ mục dòng Tổng Cộng template
     
     for r in range(1, ws.max_row + 1):
         cell_val = ws.cell(row=r, column=1).value
@@ -3251,20 +3226,20 @@ def generate_production_order_logic(contract_id, template_path):
             
     if not table_start_row:
         print("Error: Table start marker {{TableStart:ProPlanProduct}} not found.")
-        return str(template_path) # Return template path if error, or raise exception
+        return str(template_path)
 
     num_items = len(products_data)
     
     if products_data:
-        # 1. Expand table
+        # 1. Expand table (Nếu có nhiều hơn 1 sản phẩm)
         if num_items > 1:
             ws.insert_rows(table_start_row + 1, amount=num_items - 1)
         
-        # Calculate new Total Row position
+        # Tính lại vị trí dòng Tổng Cộng mới
         if total_row_template_idx:
             total_row = total_row_template_idx + (num_items - 1) if num_items > 0 else total_row_template_idx
         else:
-            total_row = table_start_row + num_items
+            total_row = table_start_row + num_items # Vị trí nếu không tìm thấy dòng tổng cộng
 
         # Define styles
         thin_border = Border(left=Side(style='thin'), 
@@ -3274,7 +3249,7 @@ def generate_production_order_logic(contract_id, template_path):
         align_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
         align_left = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
-        # 2. Copy styles
+        # 2. Copy styles (Giữ nguyên logic copy style)
         if num_items > 1:
             for i in range(1, num_items):
                 target_row = table_start_row + i
@@ -3283,11 +3258,16 @@ def generate_production_order_logic(contract_id, template_path):
                     source_cell = ws.cell(row=source_row, column=col)
                     target_cell = ws.cell(row=target_row, column=col)
                     
-                    if source_cell.border: target_cell.border = style_copy(source_cell.border)
-                    if source_cell.font: target_cell.font = style_copy(source_cell.font)
-                    if source_cell.alignment: target_cell.alignment = style_copy(source_cell.alignment)
-                    if source_cell.fill: target_cell.fill = style_copy(source_cell.fill)
-                    if source_cell.number_format: target_cell.number_format = style_copy(source_cell.number_format)
+                    if source_cell.border:
+                        target_cell.border = style_copy(source_cell.border)
+                    if source_cell.font:
+                        target_cell.font = style_copy(source_cell.font)
+                    if source_cell.alignment:
+                        target_cell.alignment = style_copy(source_cell.alignment)
+                    if source_cell.fill:
+                        target_cell.fill = style_copy(source_cell.fill)
+                    if source_cell.number_format:
+                        target_cell.number_format = style_copy(source_cell.number_format)
 
         # 3. Clear the first row template marker
         ws.cell(row=table_start_row, column=1).value = ""
@@ -3296,7 +3276,7 @@ def generate_production_order_logic(contract_id, template_path):
         for i, item in enumerate(products_data):
             row_idx = table_start_row + i
             
-            # Unmerge cells before writing
+            # CRITICAL: Unmerge cells before writing (Giữ nguyên phần này)
             for col in range(1, 16):
                 cell = ws.cell(row=row_idx, column=col)
                 is_merged = False
@@ -3328,7 +3308,7 @@ def generate_production_order_logic(contract_id, template_path):
                 "Delivery_Date__c": item.get("Delivery_Date__c")
             }
 
-            # Write data
+            # Write data - columns A through O
             ws.cell(row=row_idx, column=1).value = i + 1 
             ws.cell(row=row_idx, column=1).alignment = align_center
             
@@ -3340,7 +3320,7 @@ def generate_production_order_logic(contract_id, template_path):
             
             desc_val = item_map["Vietnamese_Description__c"] or ""
             
-            # Handle Bold Text before Hyphen
+            # Handle Bold Text before Hyphen (Nếu là RichText, việc merge sẽ cần xử lý khác)
             if desc_val and '-' in str(desc_val):
                 parts = str(desc_val).split('-', 1)
                 bold_part = parts[0]
@@ -3356,7 +3336,7 @@ def generate_production_order_logic(contract_id, template_path):
             
             ws.cell(row=row_idx, column=4).alignment = align_left
             
-            # Auto-adjust row height
+            # Auto-adjust row height (Giữ nguyên phần này)
             desc_str = str(desc_val)
             explicit_lines = desc_str.count('\n') + 1
             wrap_lines = (len(desc_str) // 25) + 1 
@@ -3366,12 +3346,12 @@ def generate_production_order_logic(contract_id, template_path):
             
             ws.row_dimensions[row_idx].height = max_lines * 20 if max_lines > 1 else 20
             
-            # Size columns
+            # Size columns (E, F, G) - Center
             ws.cell(row=row_idx, column=5).value = item_map["Length"]
             ws.cell(row=row_idx, column=6).value = item_map["Width"]
             ws.cell(row=row_idx, column=7).value = item_map["Height"]
             
-            # Quantity columns
+            # Quantity columns (H, I, J, K, L, M) - Center
             ws.cell(row=row_idx, column=8).value = item_map["Quantity"]
             ws.cell(row=row_idx, column=9).value = item_map["Crates__c"]
             
@@ -3422,7 +3402,10 @@ def generate_production_order_logic(contract_id, template_path):
         first_data_row = table_start_row
         last_data_row = table_start_row + len(products_data) - 1
         
-        # Unmerge cells in Total row to ensure totals are visible
+        # Dòng Tổng Cộng mới đã được tính ở trên: total_row
+        
+        # CRITICAL: Unmerge cells in Total row to ensure totals are visible
+        # Check columns H (8) to M (13)
         for col in range(8, 14):
             cell = ws.cell(row=total_row, column=col)
             is_merged = False
@@ -3439,23 +3422,29 @@ def generate_production_order_logic(contract_id, template_path):
                 except KeyError:
                     pass
 
-        # Write Excel Formulas
+        # Cột H: Quantity (Viên)
         ws.cell(row=total_row, column=8).value = f"=SUM({get_column_letter(8)}{first_data_row}:{get_column_letter(8)}{last_data_row})"
-        ws.cell(row=total_row, column=9).value = f"=SUM({get_column_letter(9)}{first_data_row}:{get_column_letter(9)}{last_data_row})"
         
+        # Cột I: Crates (Kiện)
+        ws.cell(row=total_row, column=9).value = f"=SUM({get_column_letter(9)}{first_data_row}:{get_column_letter(9)}{last_data_row})"
+
+        # Cột J: M2 (m2__c)
         ws.cell(row=total_row, column=10).value = f"=SUM({get_column_letter(10)}{first_data_row}:{get_column_letter(10)}{last_data_row})"
         ws.cell(row=total_row, column=10).number_format = '0.00'
         
+        # Cột K: M3 (m3__c)
         ws.cell(row=total_row, column=11).value = f"=SUM({get_column_letter(11)}{first_data_row}:{get_column_letter(11)}{last_data_row})"
         ws.cell(row=total_row, column=11).number_format = '0.00'
         
+        # Cột L: Tons (Tấn)
         ws.cell(row=total_row, column=12).value = f"=SUM({get_column_letter(12)}{first_data_row}:{get_column_letter(12)}{last_data_row})"
         ws.cell(row=total_row, column=12).number_format = '0.00'
         
+        # Cột M: Conts (Container)
         ws.cell(row=total_row, column=13).value = f"=SUM({get_column_letter(13)}{first_data_row}:{get_column_letter(13)}{last_data_row})"
         ws.cell(row=total_row, column=13).number_format = '0.00'
         
-        # Format Total Row
+        # Căn chỉnh và định dạng cho các ô số
         for col in range(8, 14): 
             cell = ws.cell(row=total_row, column=col)
             cell.alignment = Alignment(horizontal='center', vertical='center')
@@ -3506,15 +3495,17 @@ def generate_production_order_logic(contract_id, template_path):
         cell.alignment = Alignment(horizontal='center', vertical='center')
 
     # ----------------------------------------------------
-    # KHẮC PHỤC LỖI MERGE CELL
+    # KHẮC PHỤC LỖI MERGE CELL (Giữ nguyên logic merge)
     # ----------------------------------------------------
 
-    # Helper function for cell content comparison
+    # Hàm hỗ trợ lấy nội dung chuỗi (dùng để so sánh)
     def get_cell_content_for_comparison(cell):
         val = cell.value
         if isinstance(val, CellRichText):
+            # Lấy nội dung chuỗi thuần túy từ CellRichText
             return str(val)
         return str(val).strip() if val is not None else ""
+
 
     # Merge duplicate "TÊN HÀNG" (Column D / 4)
     if products_data:
@@ -3525,13 +3516,15 @@ def generate_production_order_logic(contract_id, template_path):
         current_val_str = get_cell_content_for_comparison(ws.cell(row=start_row, column=4))
         
         for r in range(start_row + 1, end_row + 2): 
-            val_str = get_cell_content_for_comparison(ws.cell(row=r, column=4)) if r <= end_row else "SENTINEL"
+            val_str = get_cell_content_for_comparison(ws.cell(row=r, column=4)) if r <= end_row else "SENTINEL" # Sử dụng giá trị phân biệt
             
             should_break = (val_str != current_val_str)
             
             if should_break:
                 if r - 1 > merge_start_row: 
+                    # Merge cells
                     ws.merge_cells(start_row=merge_start_row, start_column=4, end_row=r-1, end_column=4)
+                    # Giữ nguyên căn chỉnh cho ô đầu tiên sau khi merge
                     ws.cell(row=merge_start_row, column=4).alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
                 
                 merge_start_row = r
@@ -3552,7 +3545,9 @@ def generate_production_order_logic(contract_id, template_path):
             
             if should_break:
                 if r - 1 > merge_start_row:
+                    # Merge cells
                     ws.merge_cells(start_row=merge_start_row, start_column=15, end_row=r-1, end_column=15)
+                    # Giữ nguyên căn chỉnh cho ô đầu tiên sau khi merge
                     ws.cell(row=merge_start_row, column=15).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
                 
                 merge_start_row = r
@@ -3563,6 +3558,8 @@ def generate_production_order_logic(contract_id, template_path):
     file_path = output_dir / file_name
     wb.save(str(file_path))
     return str(file_path)
+
+
 
 @app.get("/generate-production-order/{contract_id}")
 async def generate_production_order_endpoint(contract_id: str):
