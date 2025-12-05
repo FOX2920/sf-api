@@ -3367,7 +3367,7 @@ def generate_production_order_logic(contract_id, template_path):
 @app.get("/generate-production-order/{contract_id}")
 async def generate_production_order_endpoint(contract_id: str):
     try:
-        template_path = os.getenv('PRODUCTION_ORDER_TEMPLATE_PATH', 'production_order_template.xlsx')
+        template_path = os.getenv('PRODUCTION_ORDER_TEMPLATE_PATH', 'templates/production_order_template.xlsx')
         if not os.path.exists(template_path):
              raise HTTPException(status_code=404, detail=f"Production Order Template not found")
 
