@@ -2420,6 +2420,13 @@ def format_picklist_checkboxes(options, selected_value, uppercase=False):
         
     return "\n".join(formatted_lines)
 
+def safe_float(val):
+    try:
+        if val is None: return 0.0
+        return float(val)
+    except (ValueError, TypeError):
+        return 0.0
+
 def generate_pi_no_discount_logic(contract_id, template_path):
     sf = get_salesforce_connection()
     
@@ -2446,6 +2453,24 @@ def generate_pi_no_discount_logic(contract_id, template_path):
     for k, v in contract_data.items():
         full_data[f"Contract__c.{k}"] = v
         
+    # --- Calculate Totals Locally ---
+    total_crates = 0.0
+    total_m3 = 0.0
+    total_tons = 0.0
+    total_conts = 0.0
+    
+    for item in contract_items:
+        total_crates += safe_float(item.get('Crates__c'))
+        total_m3 += safe_float(item.get('m3__c'))
+        total_tons += safe_float(item.get('Tons__c'))
+        total_conts += safe_float(item.get('Cont__c'))
+        
+    full_data['Contract__c.Total_Crates__c'] = total_crates
+    full_data['Contract__c.Total_m3__c'] = total_m3
+    full_data['Contract__c.Total_Tons__c'] = total_tons
+    full_data['Contract__c.Total_Conts__c'] = total_conts
+    # --------------------------------
+
     account_id = contract_data.get('Account__c')
     if account_id:
         acc_fields = ["Name", "BillingStreet", "BillingCity", "BillingPostalCode", "BillingCountry", "Phone", "Fax__c", "VAT__c"]
@@ -2858,6 +2883,23 @@ def generate_quote_no_discount_logic(quote_id, template_path):
     for k, v in quote_data.items():
         full_data[f"Quote.{k}"] = v
         
+    # --- Calculate Totals Locally ---
+    total_crates = 0.0
+    total_m3 = 0.0
+    total_tons = 0.0
+    total_conts = 0.0
+    
+    for item in quote_items:
+        total_crates += safe_float(item.get('Crates_Quote__c'))
+        total_m3 += safe_float(item.get('m3__c'))
+        total_tons += safe_float(item.get('Tons__c'))
+        total_conts += safe_float(item.get('Cont__c'))
+        
+    full_data['Quote.Total_Crates__c'] = total_crates
+    full_data['Quote.Total_m3__c'] = total_m3
+    full_data['Quote.Total_Tons__c'] = total_tons
+    full_data['Quote.Total_Conts__c'] = total_conts
+    # --------------------------------
     account_id = quote_data.get('AccountId')
     if account_id:
         acc_fields = ["Name", "BillingStreet", "BillingCity", "BillingPostalCode", "BillingCountry", "Phone", "Fax__c", "VAT__c"]
@@ -3106,6 +3148,30 @@ def generate_production_order_logic(contract_id, template_path):
                 except:
                     pass
 
+    # --- Calculate Totals Locally ---
+    total_pcs = 0.0
+    total_crates = 0.0
+    total_m2 = 0.0
+    total_m3 = 0.0
+    total_tons = 0.0
+    total_conts = 0.0
+    
+    if products_data:
+        for item in products_data:
+            total_pcs += safe_float(item.get('Quantity__c'))
+            total_crates += safe_float(item.get('Crates__c'))
+            total_m2 += safe_float(item.get('m2__c'))
+            total_m3 += safe_float(item.get('m3__c'))
+            total_tons += safe_float(item.get('Tons__c'))
+            total_conts += safe_float(item.get('Cont__c'))
+            
+    flat_data['Contract__c.Total_Pcs_PO__c'] = total_pcs
+    flat_data['Contract__c.Total_Crates__c'] = total_crates
+    flat_data['Contract__c.Total_m2__c'] = total_m2
+    flat_data['Contract__c.Total_m3__c'] = total_m3
+    flat_data['Contract__c.Total_Tons__c'] = total_tons
+    flat_data['Contract__c.Total_Conts__c'] = total_conts
+    # --------------------------------
     for row in ws.iter_rows():
         for cell in row:
             if cell.value and isinstance(cell.value, str):
