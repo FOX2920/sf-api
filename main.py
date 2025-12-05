@@ -3098,6 +3098,7 @@ def get_production_order_data(sf, contract_id):
     if not sf:
         return None, None
 
+    # Query Contract
     contract_query = f"""
         SELECT Id, Production_Order_Number__c, Name, CreatedDate, Port_of_Origin__c, 
                Port_of_Discharge__c, Stockyard__c, Total_Pcs_PO__c, Total_Crates__c, 
@@ -3112,6 +3113,7 @@ def get_production_order_data(sf, contract_id):
         print(f"Error querying Contract: {e}")
         contract_data = {}
 
+    # Query Order Products
     products_query = f"""
         SELECT Id, IsDeleted, Name, CreatedDate, LastModifiedDate, SystemModstamp, LastActivityDate, LastViewedDate, LastReferencedDate, Charge_Unit__c, Cont__c, Container_Weight_Regulations__c, Crates__c, Height__c, Length__c, List_Price__c, Quantity__c, Width__c, m2__c, m3__c, ml__c, Packing__c, Sales_Price__c, Tons__c, Total_Price_USD__c, Actual_Cont__c, Actual_Crates__c, Actual_Quantity__c, Actual_Tons__c, Actual_m2__c, Actual_m3__c, Actual_ml__c, Product_Description__c, Actual_Total_Price_USD__c, Pending_Cont__c, Pending_Crates__c, Pending_m2__c, Pending_m3__c, Pending_ml__c, Pending_Quantity__c, Pending_Amount_USD__c, Pending_Tons__c, Delivery_Date__c, Planned_Quantity__c, Total_Child_Order_Actual_Quantity__c, Pending_Quantity_for_child_2__c, Delivered_date__c, Line_number__c, Line_item_no_for_print__c, SKU__c, Vietnamese_Description__c, Order__r.Name, Contract_PI__r.Id 
         FROM Order_Product__c 
@@ -3554,20 +3556,6 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
     wb.save(output_path)
     print(f"Filled template saved to: {output_path}")
 
-def generate_production_order_logic(contract_id, template_path):
-    sf = get_salesforce_connection()
-    contract_data, products_data = get_production_order_data(sf, contract_id)
-    
-    if not contract_data:
-        raise ValueError(f"Contract not found: {contract_id}")
-
-    output_dir = get_output_directory()
-    file_name = f"Production_Order_{contract_data.get('Production_Order_Number__c', contract_data.get('Name'))}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    file_path = output_dir / file_name
-    
-    fill_production_order_template(template_path, str(file_path), contract_data, products_data)
-    
-    return str(file_path)
 @app.get("/generate-production-order/{contract_id}")
 async def generate_production_order_endpoint(contract_id: str):
     try:
@@ -3575,8 +3563,19 @@ async def generate_production_order_endpoint(contract_id: str):
         if not os.path.exists(template_path):
              raise HTTPException(status_code=404, detail=f"Production Order Template not found")
 
-        file_path = generate_production_order_logic(contract_id, template_path)
-        return FileResponse(file_path, filename=os.path.basename(file_path), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        sf = get_salesforce_connection()
+        contract_data, products_data = get_production_order_data(sf, contract_id)
+        
+        if not contract_data:
+            raise HTTPException(status_code=404, detail=f"Contract not found: {contract_id}")
+
+        output_dir = get_output_directory()
+        file_name = f"Production_Order_{contract_data.get('Production_Order_Number__c', contract_data.get('Name'))}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        file_path = output_dir / file_name
+        
+        fill_production_order_template(template_path, str(file_path), contract_data, products_data)
+        
+        return FileResponse(str(file_path), filename=os.path.basename(file_path), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
