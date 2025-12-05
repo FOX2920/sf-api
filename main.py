@@ -1806,249 +1806,7 @@ async def generate_pi_no_discount_endpoint(contract_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- Production Order Generation ---
 
-def generate_production_order_file(contract_id: str, template_path: str):
-    sf = get_salesforce_connection()
-    
-    # Query Contract
-    contract_query = f"""
-        SELECT Id, Production_Order_Number__c, Name, CreatedDate, Port_of_Origin__c, 
-               Port_of_Discharge__c, Stockyard__c, Total_Pcs_PO__c, Total_Crates__c, 
-               Total_m2__c, Total_m3__c, Total_Tons__c, Total_Conts__c
-        FROM Contract__c 
-        WHERE Id = '{contract_id}'
-    """
-    try:
-        contract_res = sf.query(contract_query)
-        contract_data = contract_res['records'][0] if contract_res['totalSize'] > 0 else {}
-    except Exception as e:
-        print(f"Error querying Contract: {e}")
-        raise ValueError(f"Error querying Contract: {e}")
-
-    # Query Order Products
-    products_query = f"""
-        SELECT Id, IsDeleted, Name, CreatedDate, LastModifiedDate, SystemModstamp, LastActivityDate, LastViewedDate, LastReferencedDate, Charge_Unit__c, Cont__c, Container_Weight_Regulations__c, Crates__c, Height__c, Length__c, List_Price__c, Quantity__c, Width__c, m2__c, m3__c, ml__c, Packing__c, Sales_Price__c, Tons__c, Total_Price_USD__c, Actual_Cont__c, Actual_Crates__c, Actual_Quantity__c, Actual_Tons__c, Actual_m2__c, Actual_m3__c, Actual_ml__c, Product_Description__c, Actual_Total_Price_USD__c, Pending_Cont__c, Pending_Crates__c, Pending_m2__c, Pending_m3__c, Pending_ml__c, Pending_Quantity__c, Pending_Amount_USD__c, Pending_Tons__c, Delivery_Date__c, Planned_Quantity__c, Total_Child_Order_Actual_Quantity__c, Pending_Quantity_for_child_2__c, Delivered_date__c, Line_number__c, Line_item_no_for_print__c, SKU__c, Vietnamese_Description__c, Order__r.Name, Contract_PI__r.Id 
-        FROM Order_Product__c 
-        WHERE Contract_PI__r.Id = '{contract_id}' 
-        ORDER BY Line_number__c ASC
-    """
-    try:
-        products_res = sf.query(products_query)
-        products_data = products_res['records']
-    except Exception as e:
-        print(f"Error querying Order Products: {e}")
-        products_data = []
-
-    wb = openpyxl.load_workbook(template_path)
-    ws = wb.active
-
-    # Flatten data
-    flat_data = {}
-    if contract_data:
-        for k, v in contract_data.items():
-            flat_data[f"Contract__c.{k}"] = v
-            if "Date" in k and v:
-                try:
-                    dt = datetime.datetime.strptime(v[:10], "%Y-%m-%d")
-                    flat_data[f"Contract__c.{k}\\@dd/MM/yyyy"] = dt.strftime("%d/%m/%Y")
-                except: pass
-
-    # Fill placeholders
-    for row in ws.iter_rows():
-        for cell in row:
-            if cell.value and isinstance(cell.value, str):
-                val = cell.value
-                matches = re.findall(r"\{\{([^\}]+)\}\}", val)
-                for match in matches:
-                    key_part = match.split('\\')[0].strip()
-                    format_part = match.split('\\@')[1].strip() if '\\@' in match else None
-                    
-                    if key_part in flat_data:
-                        replace_val = flat_data[key_part]
-                        if replace_val is None: replace_val = ""
-                        
-                        if format_part and replace_val:
-                            try:
-                                val_str = str(replace_val).split('T')[0]
-                                if 'T' in str(replace_val):
-                                     dt = datetime.datetime.strptime(str(replace_val).split('+')[0].split('.')[0], "%Y-%m-%dT%H:%M:%S")
-                                else:
-                                     dt = datetime.datetime.strptime(val_str, "%Y-%m-%d")
-                                py_format = format_part.replace('dd', '%d').replace('MM', '%m').replace('yyyy', '%Y')
-                                replace_val = dt.strftime(py_format)
-                            except: pass
-                        
-                        val = val.replace(f"{{{{{match}}}}}", str(replace_val))
-                        cell.alignment = Alignment(wrap_text=True, vertical='center', horizontal=cell.alignment.horizontal if cell.alignment else 'left')
-                cell.value = val
-
-    # Fill Table
-    table_start_row = None
-    for r in range(1, ws.max_row + 1):
-        cell_val = ws.cell(row=r, column=1).value
-        if cell_val and "{{TableStart:ProPlanProduct}}" in str(cell_val):
-            table_start_row = r
-            break
-            
-    if table_start_row and products_data:
-        num_items = len(products_data)
-        if num_items > 1:
-            ws.insert_rows(table_start_row + 1, amount=num_items - 1)
-            
-        thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
-        align_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
-        align_left = Alignment(horizontal='left', vertical='center', wrap_text=True)
-        
-        # Copy styles
-        if num_items > 1:
-            for i in range(1, num_items):
-                for col in range(1, 16):
-                    source_cell = ws.cell(row=table_start_row, column=col)
-                    target_cell = ws.cell(row=table_start_row + i, column=col)
-                    if source_cell.border: target_cell.border = style_copy(source_cell.border)
-                    if source_cell.font: target_cell.font = style_copy(source_cell.font)
-                    if source_cell.alignment: target_cell.alignment = style_copy(source_cell.alignment)
-                    if source_cell.number_format: target_cell.number_format = style_copy(source_cell.number_format)
-
-        ws.cell(row=table_start_row, column=1).value = ""
-        
-        for i, item in enumerate(products_data):
-            row_idx = table_start_row + i
-            
-            # Unmerge
-            for col in range(1, 16):
-                cell = ws.cell(row=row_idx, column=col)
-                for merged_range in list(ws.merged_cells.ranges):
-                    if cell.coordinate in merged_range:
-                        try: ws.unmerge_cells(str(merged_range))
-                        except: pass
-                ws.cell(row=row_idx, column=col).border = thin_border
-
-            # Map Data
-            ws.cell(row=row_idx, column=1).value = i + 1
-            ws.cell(row=row_idx, column=1).alignment = align_center
-            ws.cell(row=row_idx, column=2).value = item.get("Order__r", {}).get("Name") if item.get("Order__r") else ""
-            ws.cell(row=row_idx, column=2).alignment = align_center
-            ws.cell(row=row_idx, column=3).value = item.get("SKU__c")
-            ws.cell(row=row_idx, column=3).alignment = align_left
-            
-            # Rich Text Description
-            desc_val = item.get("Vietnamese_Description__c") or ""
-            if desc_val and '-' in str(desc_val):
-                parts = str(desc_val).split('-', 1)
-                rich_text = CellRichText(
-                    TextBlock(InlineFont(b=True, rFont='Times New Roman', sz=11), parts[0]),
-                    TextBlock(InlineFont(b=False, rFont='Times New Roman', sz=11), '-' + parts[1])
-                )
-                ws.cell(row=row_idx, column=4).value = rich_text
-            else:
-                ws.cell(row=row_idx, column=4).value = desc_val
-            ws.cell(row=row_idx, column=4).alignment = align_left
-            
-            # Dimensions & Quantity
-            ws.cell(row=row_idx, column=5).value = item.get("Length__c")
-            ws.cell(row=row_idx, column=6).value = item.get("Width__c")
-            ws.cell(row=row_idx, column=7).value = item.get("Height__c")
-            ws.cell(row=row_idx, column=8).value = item.get("Quantity__c")
-            ws.cell(row=row_idx, column=9).value = item.get("Crates__c")
-            
-            if item.get("m2__c"): 
-                ws.cell(row=row_idx, column=10).value = float(item.get("m2__c"))
-                ws.cell(row=row_idx, column=10).number_format = '0.00'
-            if item.get("m3__c"):
-                ws.cell(row=row_idx, column=11).value = float(item.get("m3__c"))
-                ws.cell(row=row_idx, column=11).number_format = '0.00'
-                
-            ws.cell(row=row_idx, column=12).value = item.get("Tons__c")
-            ws.cell(row=row_idx, column=13).value = item.get("Cont__c")
-            
-            for col in range(5, 14): ws.cell(row=row_idx, column=col).alignment = align_center
-            
-            # Packing
-            packing_val = item.get("Packing__c")
-            if packing_val:
-                try:
-                    ws.cell(row=row_idx, column=14).value = float(packing_val)
-                    ws.cell(row=row_idx, column=14).number_format = '0.0 "viên/kiện"'
-                except:
-                    ws.cell(row=row_idx, column=14).value = f"{packing_val}\nviên/kiện"
-            ws.cell(row=row_idx, column=14).alignment = align_center
-            
-            # Delivery Date
-            del_date = item.get("Delivery_Date__c")
-            if del_date:
-                try:
-                    dt = datetime.datetime.strptime(del_date[:10], "%Y-%m-%d")
-                    ws.cell(row=row_idx, column=15).value = dt.strftime("%d/%m/%Y")
-                except:
-                    ws.cell(row=row_idx, column=15).value = del_date
-            ws.cell(row=row_idx, column=15).alignment = align_center
-
-        # Merge duplicate "TÊN HÀNG" (Column D / 4)
-        merge_identical_cells(ws, table_start_row, len(products_data), 4)
-        
-        # Merge duplicate "THỜI GIAN GIAO HÀNG" (Column O / 15)
-        # Note: merge_identical_cells helper uses left alignment, but date needs center.
-        # We might need to manually adjust alignment after merging or update helper.
-        # For now, let's use the helper and override alignment if needed, or just replicate logic.
-        # Replicating logic for Col 15 to ensure Center alignment
-        start_merge_row = table_start_row
-        current_val = ws.cell(row=start_merge_row, column=15).value
-        for i in range(1, len(products_data)):
-            row_idx = table_start_row + i
-            val = ws.cell(row=row_idx, column=15).value
-            if val != current_val:
-                if row_idx - 1 > start_merge_row:
-                    ws.merge_cells(start_row=start_merge_row, start_column=15, end_row=row_idx-1, end_column=15)
-                    ws.cell(row=start_merge_row, column=15).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-                start_merge_row = row_idx
-                current_val = val
-        last_row = table_start_row + len(products_data) - 1
-        if last_row > start_merge_row:
-            ws.merge_cells(start_row=start_merge_row, start_column=15, end_row=last_row, end_column=15)
-            ws.cell(row=start_merge_row, column=15).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-
-    now = datetime.datetime.now()
-    timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
-    safe_name = sanitize_filename(contract_data.get('Production_Order_Number__c', 'Draft'))
-    file_name = f"ProductionOrder_{safe_name}_{timestamp}.xlsx"
-    output_dir = get_output_directory()
-    file_path = output_dir / file_name
-    wb.save(str(file_path))
-    
-    # Upload to Salesforce
-    with open(file_path, "rb") as f:
-        file_data = f.read()
-    encoded = base64.b64encode(file_data).decode("utf-8")
-    
-    content_version = sf.ContentVersion.create({
-        "Title": file_name.rsplit(".", 1)[0],
-        "PathOnClient": file_name,
-        "VersionData": encoded,
-        "FirstPublishLocationId": contract_id
-    })
-    
-    return {
-        "file_path": str(file_path),
-        "file_name": file_name,
-        "salesforce_content_version_id": content_version["id"]
-    }
-
-@app.get("/generate-production-order/{contract_id}")
-async def generate_production_order_endpoint(contract_id: str):
-    try:
-        template_path = os.getenv('PRODUCTION_ORDER_TEMPLATE_PATH', 'templates/production_order_template.xlsx')
-        if not os.path.exists(template_path):
-             if os.path.exists('production_order_template.xlsx'):
-                 template_path = 'production_order_template.xlsx'
-             else:
-                 raise HTTPException(status_code=404, detail=f"Template not found: {template_path}")
-        
-        result = generate_production_order_file(contract_id, template_path)
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 # --- Quote No Discount Generation ---
 
@@ -3093,7 +2851,10 @@ async def generate_quote_no_discount_endpoint(quote_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+
 # --- Production Order Logic ---
+
 def get_production_order_data(sf, contract_id):
     if not sf:
         return None, None
@@ -3175,7 +2936,6 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
                                 py_format = format_part.replace('dd', '%d').replace('MM', '%m').replace('yyyy', '%Y')
                                 replace_val = dt.strftime(py_format)
                             except Exception as e:
-                                # print(f"Error formatting date {replace_val} with {format_part}: {e}")
                                 replace_val = str(replace_val).split('T')[0]
 
                         total_fields = [
@@ -3213,7 +2973,7 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
 
     # Fill Table
     table_start_row = None
-    total_row_template_idx = None # Thêm biến để lưu chỉ mục dòng Tổng Cộng template
+    total_row_template_idx = None
     
     for r in range(1, ws.max_row + 1):
         cell_val = ws.cell(row=r, column=1).value
@@ -3224,22 +2984,22 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
             
     if not table_start_row:
         print("Error: Table start marker {{TableStart:ProPlanProduct}} not found.")
-        return
+        return str(output_path) # Return path even if failed to fill table, or raise error
 
     num_items = len(products_data)
     
     if products_data:
         print(f"Found table start at row {table_start_row}. Expanding for {num_items} items.")
         
-        # 1. Expand table (Nếu có nhiều hơn 1 sản phẩm)
+        # 1. Expand table
         if num_items > 1:
             ws.insert_rows(table_start_row + 1, amount=num_items - 1)
         
-        # Tính lại vị trí dòng Tổng Cộng mới
+        # Calculate new total row position
         if total_row_template_idx:
             total_row = total_row_template_idx + (num_items - 1) if num_items > 0 else total_row_template_idx
         else:
-            total_row = table_start_row + num_items # Vị trí nếu không tìm thấy dòng tổng cộng
+            total_row = table_start_row + num_items
 
         # Define styles
         thin_border = Border(left=Side(style='thin'), 
@@ -3249,7 +3009,7 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
         align_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
         align_left = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
-        # 2. Copy styles (Giữ nguyên logic copy style)
+        # 2. Copy styles
         if num_items > 1:
             for i in range(1, num_items):
                 target_row = table_start_row + i
@@ -3276,7 +3036,7 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
         for i, item in enumerate(products_data):
             row_idx = table_start_row + i
             
-            # CRITICAL: Unmerge cells before writing (Giữ nguyên phần này)
+            # CRITICAL: Unmerge cells before writing
             for col in range(1, 16):
                 cell = ws.cell(row=row_idx, column=col)
                 is_merged = False
@@ -3320,7 +3080,6 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
             
             desc_val = item_map["Vietnamese_Description__c"] or ""
             
-            # Handle Bold Text before Hyphen (Nếu là RichText, việc merge sẽ cần xử lý khác)
             if desc_val and '-' in str(desc_val):
                 parts = str(desc_val).split('-', 1)
                 bold_part = parts[0]
@@ -3336,7 +3095,7 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
             
             ws.cell(row=row_idx, column=4).alignment = align_left
             
-            # Auto-adjust row height (Giữ nguyên phần này)
+            # Auto-adjust row height
             desc_str = str(desc_val)
             explicit_lines = desc_str.count('\n') + 1
             wrap_lines = (len(desc_str) // 25) + 1 
@@ -3402,10 +3161,7 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
         first_data_row = table_start_row
         last_data_row = table_start_row + len(products_data) - 1
         
-        # Dòng Tổng Cộng mới đã được tính ở trên: total_row
-        
         # CRITICAL: Unmerge cells in Total row to ensure totals are visible
-        # Check columns H (8) to M (13)
         for col in range(8, 14):
             cell = ws.cell(row=total_row, column=col)
             is_merged = False
@@ -3495,17 +3251,14 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
         cell.alignment = Alignment(horizontal='center', vertical='center')
 
     # ----------------------------------------------------
-    # KHẮC PHỤC LỖI MERGE CELL (Giữ nguyên logic merge)
+    # KHẮC PHỤC LỖI MERGE CELL
     # ----------------------------------------------------
 
-    # Hàm hỗ trợ lấy nội dung chuỗi (dùng để so sánh)
     def get_cell_content_for_comparison(cell):
         val = cell.value
         if isinstance(val, CellRichText):
-            # Lấy nội dung chuỗi thuần túy từ CellRichText
             return str(val)
         return str(val).strip() if val is not None else ""
-
 
     # Merge duplicate "TÊN HÀNG" (Column D / 4)
     if products_data:
@@ -3516,15 +3269,13 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
         current_val_str = get_cell_content_for_comparison(ws.cell(row=start_row, column=4))
         
         for r in range(start_row + 1, end_row + 2): 
-            val_str = get_cell_content_for_comparison(ws.cell(row=r, column=4)) if r <= end_row else "SENTINEL" # Sử dụng giá trị phân biệt
+            val_str = get_cell_content_for_comparison(ws.cell(row=r, column=4)) if r <= end_row else "SENTINEL"
             
             should_break = (val_str != current_val_str)
             
             if should_break:
                 if r - 1 > merge_start_row: 
-                    # Merge cells
                     ws.merge_cells(start_row=merge_start_row, start_column=4, end_row=r-1, end_column=4)
-                    # Giữ nguyên căn chỉnh cho ô đầu tiên sau khi merge
                     ws.cell(row=merge_start_row, column=4).alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
                 
                 merge_start_row = r
@@ -3545,37 +3296,83 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
             
             if should_break:
                 if r - 1 > merge_start_row:
-                    # Merge cells
                     ws.merge_cells(start_row=merge_start_row, start_column=15, end_row=r-1, end_column=15)
-                    # Giữ nguyên căn chỉnh cho ô đầu tiên sau khi merge
                     ws.cell(row=merge_start_row, column=15).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
                 
                 merge_start_row = r
                 current_val = val
 
     wb.save(output_path)
-    print(f"Filled template saved to: {output_path}")
+    return str(output_path)
+def sanitize_filename(filename):
+    """
+    Làm sạch chuỗi để đảm bảo nó là tên file hợp lệ trên hầu hết các HĐH.
+    Loại bỏ các ký tự không hợp lệ và thay thế khoảng trắng bằng dấu gạch dưới.
+    """
+    # 1. Thay thế khoảng trắng bằng dấu gạch dưới
+    sanitized = filename.replace(' ', '_')
+    
+    # 2. Loại bỏ các ký tự không hợp lệ cho tên file (ví dụ: \ / : * ? " < > |)
+    # Đây là các ký tự thường bị cấm trên Windows/Unix
+    # Regex sẽ thay thế bất kỳ ký tự nào không phải chữ cái, số, dấu gạch dưới, hoặc dấu gạch ngang bằng rỗng.
+    sanitized = re.sub(r'[^\w\-.]', '', sanitized)
+    
+    # 3. Đảm bảo không có dấu gạch dưới kép liên tiếp sau khi thay thế
+    sanitized = re.sub(r'__+', '_', sanitized)
+    
+    # Cắt bớt nếu quá dài (ví dụ: > 255 ký tự)
+    # sanitized = sanitized[:200] 
+    
+    return sanitized
+
+def generate_production_order_logic(contract_id, template_path):
+    sf = get_salesforce_connection()
+    contract_data, products_data = get_production_order_data(sf, contract_id)
+    
+    if not contract_data:
+        raise ValueError(f"Contract not found or empty for ID: {contract_id}")
+    
+    contract_name = contract_data.get('Name')
+    print(contract_name)
+    
+    # Lấy tên Hợp đồng đã được làm sạch
+    safe_contract_name = sanitize_filename(str(contract_name)) 
+    
+    output_dir = get_output_directory()
+    
+    # 🎯 Áp dụng tên Hợp đồng đã được làm sạch vào tên file
+    file_name = f"ProductionOrder_{safe_contract_name}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    file_path = output_dir / file_name
+    
+    generated_path = fill_production_order_template(template_path, str(file_path), contract_data, products_data)
+    
+    # Upload to Salesforce
+    with open(generated_path, "rb") as f:
+        file_data = f.read()
+    encoded = base64.b64encode(file_data).decode("utf-8")
+    
+    content_version = sf.ContentVersion.create({
+        "Title": file_name.rsplit(".", 1)[0],
+        "PathOnClient": file_name,
+        "VersionData": encoded,
+        "FirstPublishLocationId": contract_id
+    })
+    
+    return {
+        "file_path": str(generated_path),
+        "file_name": file_name,
+        "salesforce_content_version_id": content_version["id"]
+    }
 
 @app.get("/generate-production-order/{contract_id}")
 async def generate_production_order_endpoint(contract_id: str):
     try:
-        template_path = os.getenv('PO_TEMPLATE_PATH', 'templates/production_order_template.xlsx')
+        template_path = os.getenv('PRODUCTION_ORDER_TEMPLATE_PATH', 'production_order_template.xlsx')
         if not os.path.exists(template_path):
              raise HTTPException(status_code=404, detail=f"Production Order Template not found")
 
-        sf = get_salesforce_connection()
-        contract_data, products_data = get_production_order_data(sf, contract_id)
-        
-        if not contract_data:
-            raise HTTPException(status_code=404, detail=f"Contract not found: {contract_id}")
-
-        output_dir = get_output_directory()
-        file_name = f"Production_Order_{contract_data.get('Production_Order_Number__c', contract_data.get('Name'))}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        file_path = output_dir / file_name
-        
-        fill_production_order_template(template_path, str(file_path), contract_data, products_data)
-        
-        return FileResponse(str(file_path), filename=os.path.basename(file_path), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        result = generate_production_order_logic(contract_id, template_path)
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
