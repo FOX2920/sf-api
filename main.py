@@ -3391,6 +3391,36 @@ def generate_production_order_logic(contract_id, template_path):
             for col in range(1, 16):
                 ws.cell(row=row_idx, column=col).border = thin_border
 
+        # ===== UNMERGE TỔNG CỘNG ROW =====
+        # Find TỔNG CỘNG row
+        total_row = None
+        for r in range(table_start_row + num_items, min(table_start_row + num_items + 5, ws.max_row + 1)):
+            for c in range(1, 6):
+                cell_val = ws.cell(row=r, column=c).value
+                if cell_val and "TỔNG CỘNG" in str(cell_val):
+                    total_row = r
+                    break
+            if total_row:
+                break
+        
+        if total_row:
+            # Unmerge all cells in TỔNG CỘNG row
+            ranges_to_unmerge = []
+            for merged_range in ws.merged_cells.ranges:
+                if merged_range.min_row == total_row and merged_range.max_row == total_row:
+                    ranges_to_unmerge.append(merged_range)
+            
+            for merged_range in ranges_to_unmerge:
+                try:
+                    ws.unmerge_cells(str(merged_range))
+                except:
+                    pass
+            
+            # Apply borders to all cells in total row
+            for col in range(1, 16):
+                ws.cell(row=total_row, column=col).border = thin_border
+        # =====================================
+
     # Merge duplicate "TÊN HÀNG" (Column D / 4)
     if products_data:
         start_row = 13
