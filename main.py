@@ -3171,7 +3171,7 @@ def generate_production_order_logic(contract_id, template_path):
     flat_data['Contract__c.Total_m3__c'] = total_m3
     flat_data['Contract__c.Total_Tons__c'] = total_tons
     flat_data['Contract__c.Total_Conts__c'] = total_conts
-    # --------------------------------
+
     for row in ws.iter_rows():
         for cell in row:
             if cell.value and isinstance(cell.value, str):
@@ -3380,6 +3380,48 @@ def generate_production_order_logic(contract_id, template_path):
             ws.cell(row=row_idx, column=15).alignment = align_center
             for col in range(1, 16):
                 ws.cell(row=row_idx, column=col).border = thin_border
+
+        # ===== FIX: FILL TỔNG CỘNG ROW AFTER ALL PRODUCT ROWS =====
+        total_row = table_start_row + num_items
+        
+        # Find TỔNG CỘNG row (should be right after product rows)
+        for r in range(total_row, min(total_row + 5, ws.max_row + 1)):
+            for c in range(1, 6):
+                cell_val = ws.cell(row=r, column=c).value
+                if cell_val and "TỔNG CỘNG" in str(cell_val):
+                    total_row = r
+                    break
+            if ws.cell(row=r, column=4).value and "TỔNG CỘNG" in str(ws.cell(row=r, column=4).value):
+                break
+        
+        # Fill totals - based on screenshot, only fill Viên (H), M2 (J), Tons (L), Cont (M)
+        # Column H (8): Total Viên/Quantity
+        if total_pcs > 0:
+            ws.cell(row=total_row, column=8).value = int(total_pcs) if total_pcs == int(total_pcs) else total_pcs
+            ws.cell(row=total_row, column=8).alignment = align_center
+            ws.cell(row=total_row, column=8).border = thin_border
+        
+        # Column J (10): Total M2
+        if total_m2 > 0:
+            ws.cell(row=total_row, column=10).value = total_m2
+            ws.cell(row=total_row, column=10).number_format = '0.00'
+            ws.cell(row=total_row, column=10).alignment = align_center
+            ws.cell(row=total_row, column=10).border = thin_border
+        
+        # Column L (12): Total Tons
+        if total_tons > 0:
+            ws.cell(row=total_row, column=12).value = total_tons
+            ws.cell(row=total_row, column=12).number_format = '0.00'
+            ws.cell(row=total_row, column=12).alignment = align_center
+            ws.cell(row=total_row, column=12).border = thin_border
+        
+        # Column M (13): Total Containers
+        if total_conts > 0:
+            ws.cell(row=total_row, column=13).value = total_conts
+            ws.cell(row=total_row, column=13).number_format = '0.00'
+            ws.cell(row=total_row, column=13).alignment = align_center
+            ws.cell(row=total_row, column=13).border = thin_border
+        # =====================================
 
     if products_data:
         start_row = 13
