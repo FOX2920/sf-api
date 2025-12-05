@@ -3197,6 +3197,7 @@ def generate_production_order_logic(contract_id, template_path):
                                     dt = datetime.datetime.strptime(val_str.split('+')[0].split('.')[0], "%Y-%m-%dT%H:%M:%S")
                                 else:
                                     dt = datetime.datetime.strptime(val_str, "%Y-%m-%d")
+                                
                                 py_format = format_part.replace('dd', '%d').replace('MM', '%m').replace('yyyy', '%Y')
                                 replace_val = dt.strftime(py_format)
                             except Exception as e:
@@ -3204,63 +3205,76 @@ def generate_production_order_logic(contract_id, template_path):
 
                         # Smart Float/Int Formatting for Totals
                         total_fields = [
-                            "Contract__c.Total_Pcs_PO__c",
-                            "Contract__c.Total_Crates__c",
-                            "Contract__c.Total_m2__c",
-                            "Contract__c.Total_m3__c",
-                            "Contract__c.Total_Tons__c",
-                            "Contract__c.Total_Conts__c"
+                            "Contract__c.Total_Pcs_PO__c", "Contract__c.Total_Crates__c", "Contract__c.Total_m2__c",
+                            "Contract__c.Total_m3__c", "Contract__c.Total_Tons__c", "Contract__c.Total_Conts__c"
                         ]
                         if key_part in total_fields and replace_val is not None:
                             try:
                                 float_val = float(replace_val)
-                                if float_val.is_integer():
-                                    replace_val = int(float_val)
-                                else:
-                                    replace_val = float_val
+                                replace_val = int(float_val) if float_val.is_integer() else float_val
                             except (ValueError, TypeError):
                                 pass
 
                         val = val.replace(f"{{{{{match}}}}}", str(replace_val))
+                        
                         cell.alignment = Alignment(wrap_text=True, vertical='center', horizontal=cell.alignment.horizontal if cell.alignment else 'left')
                         
                         val_str = str(replace_val)
                         explicit_lines = val_str.count('\n') + 1
                         wrap_lines = (len(val_str) // 20) + 1 
                         est_lines = max(explicit_lines, wrap_lines)
+                        
                         if est_lines > 1:
                             current_height = ws.row_dimensions[cell.row].height or 15
                             ws.row_dimensions[cell.row].height = max(current_height, est_lines * 20)
-
+                    else:
+                        pass
+                
                 # Convert to number if possible
                 try:
                     clean_val = str(val).replace(',', '')
                     float_val = float(clean_val)
-                    if float_val.is_integer():
-                         cell.value = int(float_val)
-                    else:
-                         cell.value = float_val
+                    cell.value = int(float_val) if float_val.is_integer() else float_val
                 except ValueError:
                     cell.value = val
 
-    # Find Table Start
+    # Fill Table
     table_start_row = None
+    total_row_template_idx = None
+    
     for r in range(1, ws.max_row + 1):
         cell_val = ws.cell(row=r, column=1).value
         if cell_val and "{{TableStart:ProPlanProduct}}" in str(cell_val):
             table_start_row = r
-            break
+        if ws.cell(row=r, column=4).value and "TỔNG CỘNG" in str(ws.cell(row=r, column=4).value).upper():
+            total_row_template_idx = r
+            
+    if not table_start_row:
+        print("Error: Table start marker {{TableStart:ProPlanProduct}} not found.")
+        return str(template_path) # Return template path if error, or raise exception
+
+    num_items = len(products_data)
     
-    if table_start_row and products_data:
-        num_items = len(products_data)
+    if products_data:
+        # 1. Expand table
         if num_items > 1:
             ws.insert_rows(table_start_row + 1, amount=num_items - 1)
-            
-        thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+        
+        # Calculate new Total Row position
+        if total_row_template_idx:
+            total_row = total_row_template_idx + (num_items - 1) if num_items > 0 else total_row_template_idx
+        else:
+            total_row = table_start_row + num_items
+
+        # Define styles
+        thin_border = Border(left=Side(style='thin'), 
+                             right=Side(style='thin'), 
+                             top=Side(style='thin'), 
+                             bottom=Side(style='thin'))
         align_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
         align_left = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
-        # Copy styles
+        # 2. Copy styles
         if num_items > 1:
             for i in range(1, num_items):
                 target_row = table_start_row + i
@@ -3268,15 +3282,17 @@ def generate_production_order_logic(contract_id, template_path):
                 for col in range(1, 16):
                     source_cell = ws.cell(row=source_row, column=col)
                     target_cell = ws.cell(row=target_row, column=col)
+                    
                     if source_cell.border: target_cell.border = style_copy(source_cell.border)
                     if source_cell.font: target_cell.font = style_copy(source_cell.font)
                     if source_cell.alignment: target_cell.alignment = style_copy(source_cell.alignment)
                     if source_cell.fill: target_cell.fill = style_copy(source_cell.fill)
                     if source_cell.number_format: target_cell.number_format = style_copy(source_cell.number_format)
 
+        # 3. Clear the first row template marker
         ws.cell(row=table_start_row, column=1).value = ""
 
-        # Fill data
+        # 4. Fill data
         for i, item in enumerate(products_data):
             row_idx = table_start_row + i
             
@@ -3290,44 +3306,46 @@ def generate_production_order_logic(contract_id, template_path):
                         is_merged = True
                         target_range = merged_range
                         break
+                
                 if is_merged and target_range:
                     try:
                         ws.unmerge_cells(str(target_range))
                     except KeyError:
                         pass
+                
                 cell = ws.cell(row=row_idx, column=col)
-                cell.border = thin_border
+                cell.border = thin_border 
 
+            # Map item fields
             item_map = {
-                "Line_number__c": item.get("Line_number__c"),
                 "Order__r.Name": item.get("Order__r", {}).get("Name") if item.get("Order__r") else "",
                 "SKU__c": item.get("SKU__c"),
                 "Vietnamese_Description__c": item.get("Vietnamese_Description__c"),
-                "Length": item.get("Length__c"),
-                "Width": item.get("Width__c"),
-                "Height": item.get("Height__c"),
-                "Quantity": item.get("Quantity__c"),
-                "Crates__c": item.get("Crates__c"),
-                "m2__c": item.get("m2__c"),
-                "m3__c": item.get("m3__c"),
-                "Tons__c": item.get("Tons__c"),
-                "Cont__c": item.get("Cont__c"),
-                "Packing__c": item.get("Packing__c"),
+                "Length": item.get("Length__c"), "Width": item.get("Width__c"), "Height": item.get("Height__c"),
+                "Quantity": item.get("Quantity__c"), "Crates__c": item.get("Crates__c"),
+                "m2__c": item.get("m2__c"), "m3__c": item.get("m3__c"), "Tons__c": item.get("Tons__c"),
+                "Cont__c": item.get("Cont__c"), "Packing__c": item.get("Packing__c"),
                 "Delivery_Date__c": item.get("Delivery_Date__c")
             }
 
-            ws.cell(row=row_idx, column=1).value = i + 1
+            # Write data
+            ws.cell(row=row_idx, column=1).value = i + 1 
             ws.cell(row=row_idx, column=1).alignment = align_center
+            
             ws.cell(row=row_idx, column=2).value = item_map["Order__r.Name"]
             ws.cell(row=row_idx, column=2).alignment = align_center
+            
             ws.cell(row=row_idx, column=3).value = item_map["SKU__c"]
             ws.cell(row=row_idx, column=3).alignment = align_left
             
             desc_val = item_map["Vietnamese_Description__c"] or ""
+            
+            # Handle Bold Text before Hyphen
             if desc_val and '-' in str(desc_val):
                 parts = str(desc_val).split('-', 1)
                 bold_part = parts[0]
                 normal_part = '-' + parts[1]
+                
                 rich_text = CellRichText(
                     TextBlock(InlineFont(b=True, rFont='Times New Roman', sz=11), bold_part),
                     TextBlock(InlineFont(b=False, rFont='Times New Roman', sz=11), normal_part)
@@ -3335,22 +3353,25 @@ def generate_production_order_logic(contract_id, template_path):
                 ws.cell(row=row_idx, column=4).value = rich_text
             else:
                 ws.cell(row=row_idx, column=4).value = desc_val
+            
             ws.cell(row=row_idx, column=4).alignment = align_left
             
+            # Auto-adjust row height
             desc_str = str(desc_val)
             explicit_lines = desc_str.count('\n') + 1
-            wrap_lines = (len(desc_str) // 25) + 1
+            wrap_lines = (len(desc_str) // 25) + 1 
             order_str = str(item_map["Order__r.Name"])
             order_lines = (len(order_str) // 10) + 1
             max_lines = max(explicit_lines, wrap_lines, order_lines)
-            if max_lines > 1:
-                ws.row_dimensions[row_idx].height = max_lines * 20
-            else:
-                ws.row_dimensions[row_idx].height = 20
             
+            ws.row_dimensions[row_idx].height = max_lines * 20 if max_lines > 1 else 20
+            
+            # Size columns
             ws.cell(row=row_idx, column=5).value = item_map["Length"]
             ws.cell(row=row_idx, column=6).value = item_map["Width"]
             ws.cell(row=row_idx, column=7).value = item_map["Height"]
+            
+            # Quantity columns
             ws.cell(row=row_idx, column=8).value = item_map["Quantity"]
             ws.cell(row=row_idx, column=9).value = item_map["Crates__c"]
             
@@ -3377,6 +3398,7 @@ def generate_production_order_logic(contract_id, template_path):
                     ws.cell(row=row_idx, column=14).number_format = '0.0 "viên/kiện"'
                 except (ValueError, TypeError):
                     ws.cell(row=row_idx, column=14).value = f"{packing_val}\nviên/kiện"
+                
                 ws.cell(row=row_idx, column=14).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
             
             del_date = item_map["Delivery_Date__c"]
@@ -3387,67 +3409,152 @@ def generate_production_order_logic(contract_id, template_path):
                 except:
                     ws.cell(row=row_idx, column=15).value = del_date
             ws.cell(row=row_idx, column=15).alignment = align_center
-            
+
+            # Apply borders
             for col in range(1, 16):
                 ws.cell(row=row_idx, column=col).border = thin_border
-
-        # ===== UNMERGE TỔNG CỘNG ROW =====
-        # Find TỔNG CỘNG row
-        total_row = None
-        for r in range(table_start_row + num_items, min(table_start_row + num_items + 5, ws.max_row + 1)):
-            for c in range(1, 6):
-                cell_val = ws.cell(row=r, column=c).value
-                if cell_val and "TỔNG CỘNG" in str(cell_val):
-                    total_row = r
+    
+    
+    # ----------------------------------------------------
+    # KHẮC PHỤC LỖI TÍNH TỔNG CỘNG BẰNG CÔNG THỨC EXCEL
+    # ----------------------------------------------------
+    if products_data and total_row_template_idx:
+        first_data_row = table_start_row
+        last_data_row = table_start_row + len(products_data) - 1
+        
+        # Unmerge cells in Total row to ensure totals are visible
+        for col in range(8, 14):
+            cell = ws.cell(row=total_row, column=col)
+            is_merged = False
+            target_range = None
+            for merged_range in ws.merged_cells.ranges:
+                if cell.coordinate in merged_range:
+                    is_merged = True
+                    target_range = merged_range
                     break
-            if total_row:
+            
+            if is_merged and target_range:
+                try:
+                    ws.unmerge_cells(str(target_range))
+                except KeyError:
+                    pass
+
+        # Write Excel Formulas
+        ws.cell(row=total_row, column=8).value = f"=SUM({get_column_letter(8)}{first_data_row}:{get_column_letter(8)}{last_data_row})"
+        ws.cell(row=total_row, column=9).value = f"=SUM({get_column_letter(9)}{first_data_row}:{get_column_letter(9)}{last_data_row})"
+        
+        ws.cell(row=total_row, column=10).value = f"=SUM({get_column_letter(10)}{first_data_row}:{get_column_letter(10)}{last_data_row})"
+        ws.cell(row=total_row, column=10).number_format = '0.00'
+        
+        ws.cell(row=total_row, column=11).value = f"=SUM({get_column_letter(11)}{first_data_row}:{get_column_letter(11)}{last_data_row})"
+        ws.cell(row=total_row, column=11).number_format = '0.00'
+        
+        ws.cell(row=total_row, column=12).value = f"=SUM({get_column_letter(12)}{first_data_row}:{get_column_letter(12)}{last_data_row})"
+        ws.cell(row=total_row, column=12).number_format = '0.00'
+        
+        ws.cell(row=total_row, column=13).value = f"=SUM({get_column_letter(13)}{first_data_row}:{get_column_letter(13)}{last_data_row})"
+        ws.cell(row=total_row, column=13).number_format = '0.00'
+        
+        # Format Total Row
+        for col in range(8, 14): 
+            cell = ws.cell(row=total_row, column=col)
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+            cell.font = Font(bold=True, name='Times New Roman', size=11)
+            cell.border = thin_border
+
+    # ----------------------------------------------------
+    # THÊM TÊN NGƯỜI SOẠN LỆNH & MERGE
+    # ----------------------------------------------------
+    signer_row_idx = None
+    for r in range(1, ws.max_row + 1):
+        # Check Column I
+        val_i = ws.cell(row=r, column=9).value 
+        if val_i:
+            val_str = str(val_i).upper()
+            if "NGƯỜI SOẠN LỆNH" in val_str or "NGƯỜI SOAN LỆNH" in val_str:
+                signer_row_idx = r
                 break
         
-        if total_row:
-            # Unmerge all cells in TỔNG CỘNG row
-            ranges_to_unmerge = []
-            for merged_range in ws.merged_cells.ranges:
-                if merged_range.min_row == total_row and merged_range.max_row == total_row:
-                    ranges_to_unmerge.append(merged_range)
-            
-            for merged_range in ranges_to_unmerge:
-                try:
-                    ws.unmerge_cells(str(merged_range))
-                except:
-                    pass
-            
-            # Apply borders to all cells in total row
-            for col in range(1, 16):
-                ws.cell(row=total_row, column=col).border = thin_border
-        # =====================================
+        # Check Column J
+        val = ws.cell(row=r, column=10).value 
+        if val:
+            val_str = str(val).upper()
+            if "NGƯỜI SOẠN LỆNH" in val_str or "NGƯỜI SOAN LỆNH" in val_str:
+                signer_row_idx = r
+                break
+        
+        # Check Column K
+        val_k = ws.cell(row=r, column=11).value 
+        if val_k:
+            val_str = str(val_k).upper()
+            if "NGƯỜI SOẠN LỆNH" in val_str or "NGƯỜI SOAN LỆNH" in val_str:
+                signer_row_idx = r
+                break
+
+    if signer_row_idx:
+        # Write "Ngọc Bích" 2 rows below, in Column I (9) and merge I-J-K (9-11)
+        target_row = signer_row_idx + 2
+        
+        # Merge cells I, J, K using string range
+        merge_range = f"I{target_row}:K{target_row}"
+        ws.merge_cells(merge_range)
+        
+        # Write value to top-left cell (Column I / 9)
+        cell = ws.cell(row=target_row, column=9)
+        cell.value = "Ngọc Bích"
+        cell.font = Font(name='Times New Roman', size=11)
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+
+    # ----------------------------------------------------
+    # KHẮC PHỤC LỖI MERGE CELL
+    # ----------------------------------------------------
+
+    # Helper function for cell content comparison
+    def get_cell_content_for_comparison(cell):
+        val = cell.value
+        if isinstance(val, CellRichText):
+            return str(val)
+        return str(val).strip() if val is not None else ""
 
     # Merge duplicate "TÊN HÀNG" (Column D / 4)
     if products_data:
-        start_row = 13
-        end_row = start_row + len(products_data) - 1
+        start_row = table_start_row 
+        end_row = table_start_row + len(products_data) - 1 
+        
         merge_start_row = start_row
-        current_val = ws.cell(row=start_row, column=4).value
-        for r in range(start_row + 1, end_row + 2):
-            val = ws.cell(row=r, column=4).value if r <= end_row else None
-            if val != current_val:
-                if r - 1 > merge_start_row:
+        current_val_str = get_cell_content_for_comparison(ws.cell(row=start_row, column=4))
+        
+        for r in range(start_row + 1, end_row + 2): 
+            val_str = get_cell_content_for_comparison(ws.cell(row=r, column=4)) if r <= end_row else "SENTINEL"
+            
+            should_break = (val_str != current_val_str)
+            
+            if should_break:
+                if r - 1 > merge_start_row: 
                     ws.merge_cells(start_row=merge_start_row, start_column=4, end_row=r-1, end_column=4)
                     ws.cell(row=merge_start_row, column=4).alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+                
                 merge_start_row = r
-                current_val = val
-
+                current_val_str = val_str
+                
     # Merge duplicate "THỜI GIAN GIAO HÀNG" (Column O / 15)
     if products_data:
-        start_row = 13
-        end_row = start_row + len(products_data) - 1
+        start_row = table_start_row
+        end_row = table_start_row + len(products_data) - 1
+        
         merge_start_row = start_row
         current_val = ws.cell(row=start_row, column=15).value
+        
         for r in range(start_row + 1, end_row + 2):
-            val = ws.cell(row=r, column=15).value if r <= end_row else None
-            if val != current_val:
+            val = ws.cell(row=r, column=15).value if r <= end_row else "SENTINEL"
+            
+            should_break = (val != current_val)
+            
+            if should_break:
                 if r - 1 > merge_start_row:
                     ws.merge_cells(start_row=merge_start_row, start_column=15, end_row=r-1, end_column=15)
                     ws.cell(row=merge_start_row, column=15).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                
                 merge_start_row = r
                 current_val = val
 
