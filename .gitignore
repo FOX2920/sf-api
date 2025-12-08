@@ -1,3 +1,6 @@
 .env
 venv
 ./venv
+output/
+__pycache__/
+

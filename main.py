@@ -1823,8 +1823,8 @@ async def generate_pi_no_discount_endpoint(contract_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- Production Order Generation ---
 
+<<<<<<< HEAD
 def generate_production_order_file(contract_id: str, template_path: str):
     sf = get_salesforce_connection()
     
@@ -2080,6 +2080,8 @@ async def generate_production_order_endpoint(contract_id: str):
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+=======
+>>>>>>> 2e4b33fb8349a3033df435f62693b9d0b3f7e352
 
 # --- Quote No Discount Generation ---
 
@@ -3169,7 +3171,10 @@ async def generate_quote_no_discount_endpoint(quote_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+
 # --- Production Order Logic ---
+
 def get_production_order_data(sf, contract_id):
     if not sf:
         return None, None
@@ -3300,18 +3305,30 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
             
     if not table_start_row:
         print("Error: Table start marker {{TableStart:ProPlanProduct}} not found.")
+<<<<<<< HEAD
         return
+=======
+        return str(output_path) # Return path even if failed to fill table, or raise error
+>>>>>>> 2e4b33fb8349a3033df435f62693b9d0b3f7e352
 
     num_items = len(products_data)
     
     if products_data:
         print(f"Found table start at row {table_start_row}. Expanding for {num_items} items.")
         
+<<<<<<< HEAD
         # 1. Expand table (Nếu có nhiều hơn 1 sản phẩm)
         if num_items > 1:
             ws.insert_rows(table_start_row + 1, amount=num_items - 1)
         
         # Tính lại vị trí dòng Tổng Cộng mới
+=======
+        # 1. Expand table
+        if num_items > 1:
+            ws.insert_rows(table_start_row + 1, amount=num_items - 1)
+        
+        # Calculate new total row position
+>>>>>>> 2e4b33fb8349a3033df435f62693b9d0b3f7e352
         if total_row_template_idx:
             total_row = total_row_template_idx + (num_items - 1) if num_items > 0 else total_row_template_idx
         else:
@@ -3352,7 +3369,11 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
         for i, item in enumerate(products_data):
             row_idx = table_start_row + i
             
+<<<<<<< HEAD
             # CRITICAL: Unmerge cells before writing (Giữ nguyên phần này)
+=======
+            # CRITICAL: Unmerge cells before writing
+>>>>>>> 2e4b33fb8349a3033df435f62693b9d0b3f7e352
             for col in range(1, 16):
                 cell = ws.cell(row=row_idx, column=col)
                 is_merged = False
@@ -3396,7 +3417,10 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
             
             desc_val = item_map["Vietnamese_Description__c"] or ""
             
+<<<<<<< HEAD
             # Handle Bold Text before Hyphen (Nếu là RichText, việc merge sẽ cần xử lý khác)
+=======
+>>>>>>> 2e4b33fb8349a3033df435f62693b9d0b3f7e352
             if desc_val and '-' in str(desc_val):
                 parts = str(desc_val).split('-', 1)
                 bold_part = parts[0]
@@ -3478,10 +3502,14 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
         first_data_row = table_start_row
         last_data_row = table_start_row + len(products_data) - 1
         
+<<<<<<< HEAD
         # Dòng Tổng Cộng mới đã được tính ở trên: total_row
         
         # CRITICAL: Unmerge cells in Total row to ensure totals are visible
         # Check columns H (8) to M (13)
+=======
+        # CRITICAL: Unmerge cells in Total row to ensure totals are visible
+>>>>>>> 2e4b33fb8349a3033df435f62693b9d0b3f7e352
         for col in range(8, 14):
             cell = ws.cell(row=total_row, column=col)
             is_merged = False
@@ -3574,7 +3602,10 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
     # KHẮC PHỤC LỖI MERGE CELL (Giữ nguyên logic merge)
     # ----------------------------------------------------
 
+<<<<<<< HEAD
     # Hàm hỗ trợ lấy nội dung chuỗi (dùng để so sánh)
+=======
+>>>>>>> 2e4b33fb8349a3033df435f62693b9d0b3f7e352
     def get_cell_content_for_comparison(cell):
         val = cell.value
         if isinstance(val, CellRichText):
@@ -3628,15 +3659,79 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
                 current_val = val
 
     wb.save(output_path)
+<<<<<<< HEAD
     print(f"Filled template saved to: {output_path}")
+=======
+    return str(output_path)
+def sanitize_filename(filename):
+    """
+    Làm sạch chuỗi để đảm bảo nó là tên file hợp lệ trên hầu hết các HĐH.
+    Loại bỏ các ký tự không hợp lệ và thay thế khoảng trắng bằng dấu gạch dưới.
+    """
+    # 1. Thay thế khoảng trắng bằng dấu gạch dưới
+    sanitized = filename.replace(' ', '_')
+    
+    # 2. Loại bỏ các ký tự không hợp lệ cho tên file (ví dụ: \ / : * ? " < > |)
+    # Đây là các ký tự thường bị cấm trên Windows/Unix
+    # Regex sẽ thay thế bất kỳ ký tự nào không phải chữ cái, số, dấu gạch dưới, hoặc dấu gạch ngang bằng rỗng.
+    sanitized = re.sub(r'[^\w\-.]', '', sanitized)
+    
+    # 3. Đảm bảo không có dấu gạch dưới kép liên tiếp sau khi thay thế
+    sanitized = re.sub(r'__+', '_', sanitized)
+    
+    # Cắt bớt nếu quá dài (ví dụ: > 255 ký tự)
+    # sanitized = sanitized[:200] 
+    
+    return sanitized
+
+def generate_production_order_logic(contract_id, template_path):
+    sf = get_salesforce_connection()
+    contract_data, products_data = get_production_order_data(sf, contract_id)
+    
+    if not contract_data:
+        raise ValueError(f"Contract not found or empty for ID: {contract_id}")
+    
+    contract_name = contract_data.get('Name')
+    print(contract_name)
+    
+    # Lấy tên Hợp đồng đã được làm sạch
+    safe_contract_name = sanitize_filename(str(contract_name)) 
+    
+    output_dir = get_output_directory()
+    
+    # 🎯 Áp dụng tên Hợp đồng đã được làm sạch vào tên file
+    file_name = f"ProductionOrder_{safe_contract_name}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    file_path = output_dir / file_name
+    
+    generated_path = fill_production_order_template(template_path, str(file_path), contract_data, products_data)
+    
+    # Upload to Salesforce
+    with open(generated_path, "rb") as f:
+        file_data = f.read()
+    encoded = base64.b64encode(file_data).decode("utf-8")
+    
+    content_version = sf.ContentVersion.create({
+        "Title": file_name.rsplit(".", 1)[0],
+        "PathOnClient": file_name,
+        "VersionData": encoded,
+        "FirstPublishLocationId": contract_id
+    })
+    
+    return {
+        "file_path": str(generated_path),
+        "file_name": file_name,
+        "salesforce_content_version_id": content_version["id"]
+    }
+>>>>>>> 2e4b33fb8349a3033df435f62693b9d0b3f7e352
 
 @app.get("/generate-production-order/{contract_id}")
 async def generate_production_order_endpoint(contract_id: str):
     try:
-        template_path = os.getenv('PO_TEMPLATE_PATH', 'templates/production_order_template.xlsx')
+        template_path = os.getenv('PRODUCTION_ORDER_TEMPLATE_PATH', 'templates/production_order_template.xlsx')
         if not os.path.exists(template_path):
              raise HTTPException(status_code=404, detail=f"Production Order Template not found")
 
+<<<<<<< HEAD
         sf = get_salesforce_connection()
         contract_data, products_data = get_production_order_data(sf, contract_id)
         
@@ -3650,6 +3745,10 @@ async def generate_production_order_endpoint(contract_id: str):
         fill_production_order_template(template_path, str(file_path), contract_data, products_data)
         
         return FileResponse(str(file_path), filename=os.path.basename(file_path), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+=======
+        result = generate_production_order_logic(contract_id, template_path)
+        return result
+>>>>>>> 2e4b33fb8349a3033df435f62693b9d0b3f7e352
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

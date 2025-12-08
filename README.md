@@ -95,3 +95,12 @@ SALESFORCE_CONSUMER_SECRET=your_consumer_secret
 -   `templates/`: Directory containing Excel templates (.xlsx).
 -   `output/`: Directory where generated files are saved (locally).
 -   `requirements.txt`: Python dependencies.
+
+## Recent Updates (2025-12-08)
+
+-   **Production Order Refinement**: Implemented identical cell merging logic for "TÊN HÀNG" (Product Name) as used for Delivery Date, ensuring cleaner output.
+-   **Local Total Calculations**: Added logic to calculate totals locally for PI, Quote, and Production Orders, overriding Salesforce values to ensure accuracy.
+-   **Timezone Consistency**: Enforced `Asia/Ho_Chi_Minh` timezone across all datetime operations.
+-   **Async MCP Tools**: Converted MCP tool definitions to `async def` for better performance.
+-   **Formatting Enhancements**: Improved Excel generated files with better bolding, wrapping, and borders.
+
