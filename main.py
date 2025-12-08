@@ -3717,12 +3717,141 @@ def generate_production_order_logic(contract_id, template_path):
         "FirstPublishLocationId": contract_id
     })
     
-    return {
-        "file_path": str(generated_path),
-        "file_name": file_name,
-        "salesforce_content_version_id": content_version["id"]
-    }
->>>>>>> 2e4b33fb8349a3033df435f62693b9d0b3f7e352
+                    ws.unmerge_cells(str(target_range))
+                except KeyError:
+                    pass
+
+        # Cột H: Quantity (Viên)
+        ws.cell(row=total_row, column=8).value = f"=SUM({get_column_letter(8)}{first_data_row}:{get_column_letter(8)}{last_data_row})"
+        
+        # Cột I: Crates (Kiện)
+        ws.cell(row=total_row, column=9).value = f"=SUM({get_column_letter(9)}{first_data_row}:{get_column_letter(9)}{last_data_row})"
+
+        # Cột J: M2 (m2__c)
+        ws.cell(row=total_row, column=10).value = f"=SUM({get_column_letter(10)}{first_data_row}:{get_column_letter(10)}{last_data_row})"
+        ws.cell(row=total_row, column=10).number_format = '0.00'
+        
+        # Cột K: M3 (m3__c)
+        ws.cell(row=total_row, column=11).value = f"=SUM({get_column_letter(11)}{first_data_row}:{get_column_letter(11)}{last_data_row})"
+        ws.cell(row=total_row, column=11).number_format = '0.00'
+        
+        # Cột L: Tons (Tấn)
+        ws.cell(row=total_row, column=12).value = f"=SUM({get_column_letter(12)}{first_data_row}:{get_column_letter(12)}{last_data_row})"
+        ws.cell(row=total_row, column=12).number_format = '0.00'
+        
+        # Cột M: Conts (Container)
+        ws.cell(row=total_row, column=13).value = f"=SUM({get_column_letter(13)}{first_data_row}:{get_column_letter(13)}{last_data_row})"
+        ws.cell(row=total_row, column=13).number_format = '0.00'
+        
+        # Căn chỉnh và định dạng cho các ô số
+        for col in range(8, 14): 
+            cell = ws.cell(row=total_row, column=col)
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+            cell.font = Font(bold=True, name='Times New Roman', size=11)
+            cell.border = thin_border
+
+    # ----------------------------------------------------
+    # THÊM TÊN NGƯỜI SOẠN LỆNH & MERGE
+    # ----------------------------------------------------
+    signer_row_idx = None
+    for r in range(1, ws.max_row + 1):
+        # Check Column I
+        val_i = ws.cell(row=r, column=9).value 
+        if val_i:
+            val_str = str(val_i).upper()
+            if "NGƯỜI SOẠN LỆNH" in val_str or "NGƯỜI SOAN LỆNH" in val_str:
+                signer_row_idx = r
+                break
+        
+        # Check Column J
+        val = ws.cell(row=r, column=10).value 
+        if val:
+            val_str = str(val).upper()
+            if "NGƯỜI SOẠN LỆNH" in val_str or "NGƯỜI SOAN LỆNH" in val_str:
+                signer_row_idx = r
+                break
+        
+        # Check Column K
+        val_k = ws.cell(row=r, column=11).value 
+        if val_k:
+            val_str = str(val_k).upper()
+            if "NGƯỜI SOẠN LỆNH" in val_str or "NGƯỜI SOAN LỆNH" in val_str:
+                signer_row_idx = r
+                break
+
+    if signer_row_idx:
+        # Write "Ngọc Bích" 2 rows below, in Column I (9) and merge I-J-K (9-11)
+        target_row = signer_row_idx + 2
+        
+        # Merge cells I, J, K using string range
+        merge_range = f"I{target_row}:K{target_row}"
+        ws.merge_cells(merge_range)
+        
+        # Write value to top-left cell (Column I / 9)
+        cell = ws.cell(row=target_row, column=9)
+        cell.value = "Ngọc Bích"
+        cell.font = Font(name='Times New Roman', size=11)
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+
+    # ----------------------------------------------------
+    # KHẮC PHỤC LỖI MERGE CELL (Giữ nguyên logic merge)
+    # ----------------------------------------------------
+
+    # Hàm hỗ trợ lấy nội dung chuỗi (dùng để so sánh)
+    def get_cell_content_for_comparison(cell):
+        val = cell.value
+        if isinstance(val, CellRichText):
+            # Lấy nội dung chuỗi thuần túy từ CellRichText
+            return str(val)
+        return str(val).strip() if val is not None else ""
+
+
+    # Merge duplicate "TÊN HÀNG" (Column D / 4)
+    if products_data:
+        start_row = table_start_row
+        end_row = table_start_row + len(products_data) - 1
+        
+        merge_start_row = start_row
+        current_val = ws.cell(row=start_row, column=4).value
+        
+        for r in range(start_row + 1, end_row + 2):
+            val = ws.cell(row=r, column=4).value if r <= end_row else "SENTINEL"
+            
+            should_break = (val != current_val)
+            
+            if should_break:
+                if r - 1 > merge_start_row:
+                    ws.merge_cells(start_row=merge_start_row, start_column=4, end_row=r-1, end_column=4)
+                    ws.cell(row=merge_start_row, column=4).alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+                
+                merge_start_row = r
+                current_val = val
+                
+    # Merge duplicate "THỜI GIAN GIAO HÀNG" (Column O / 15)
+    if products_data:
+        start_row = table_start_row
+        end_row = table_start_row + len(products_data) - 1
+        
+        merge_start_row = start_row
+        current_val = ws.cell(row=start_row, column=15).value
+        
+        for r in range(start_row + 1, end_row + 2):
+            val = ws.cell(row=r, column=15).value if r <= end_row else "SENTINEL"
+            
+            should_break = (val != current_val)
+            
+            if should_break:
+                if r - 1 > merge_start_row:
+                    # Merge cells
+                    ws.merge_cells(start_row=merge_start_row, start_column=15, end_row=r-1, end_column=15)
+                    # Giữ nguyên căn chỉnh cho ô đầu tiên sau khi merge
+                    ws.cell(row=merge_start_row, column=15).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                
+                merge_start_row = r
+                current_val = val
+
+    wb.save(output_path)
+    print(f"Filled template saved to: {output_path}")
 
 @app.get("/generate-production-order/{contract_id}")
 async def generate_production_order_endpoint(contract_id: str):
@@ -3731,7 +3860,6 @@ async def generate_production_order_endpoint(contract_id: str):
         if not os.path.exists(template_path):
              raise HTTPException(status_code=404, detail=f"Production Order Template not found")
 
-<<<<<<< HEAD
         sf = get_salesforce_connection()
         contract_data, products_data = get_production_order_data(sf, contract_id)
         
@@ -3745,10 +3873,6 @@ async def generate_production_order_endpoint(contract_id: str):
         fill_production_order_template(template_path, str(file_path), contract_data, products_data)
         
         return FileResponse(str(file_path), filename=os.path.basename(file_path), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-=======
-        result = generate_production_order_logic(contract_id, template_path)
-        return result
->>>>>>> 2e4b33fb8349a3033df435f62693b9d0b3f7e352
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
