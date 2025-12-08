@@ -151,30 +151,30 @@ def get_output_directory() -> Path:
     
     return output_dir
 
-def format_picklist_checkboxes(options: list[str], selected_value: str, uppercase: bool = False) -> str:
+def format_picklist_checkboxes(options, selected_value, uppercase=False):
     """
-    Format picklist options as checkbox text.
-    
-    Args:
-        options: List of picklist options
-        selected_value: The currently selected value
-        uppercase: Whether to display values in uppercase
-    
-    Returns:
-        Formatted string with checkboxes
+    Format picklist options as a checkbox list.
+    Mark the selected value with ☑, others with ☐.
     """
     checked_box = '☑'
     unchecked_box = '☐'
+    formatted_lines = []
     
-    selected_upper = (selected_value or '').strip().upper()
+    # Normalize selected value for comparison
+    selected_value_norm = str(selected_value or '').strip().upper()
     
-    lines = []
     for opt in options:
-        mark = checked_box if opt.upper() == selected_upper else unchecked_box
-        display_value = opt.upper() if uppercase else opt
-        lines.append(f"{mark} {display_value}")
-    
-    return "\n".join(lines)
+        opt_label = str(opt)
+        # Compare uppercase to ensure matches work
+        is_selected = opt_label.upper() == selected_value_norm
+        
+        if uppercase:
+            opt_label = opt_label.upper()
+            
+        checkbox = checked_box if is_selected else unchecked_box
+        formatted_lines.append(f"{checkbox} {opt_label}")
+        
+    return "\n".join(formatted_lines)
 
 def generate_packing_list(shipment_id: str, template_path: str):
     """Generate packing list for a given shipment ID"""
@@ -1602,6 +1602,11 @@ def adjust_row_height_for_merged_cell(ws, start_row, end_row, col_idx, text):
 def generate_pi_no_discount_file(contract_id: str, template_path: str):
     sf = get_salesforce_connection()
     
+    # Get picklist values for PI
+    incoterms_options = get_picklist_values(sf, 'Contract__c', 'Incoterms__c')
+    terms_of_sale_options = get_picklist_values(sf, 'Contract__c', 'Terms_of_Sale__c')
+    terms_of_payment_options = get_picklist_values(sf, 'Contract__c', 'Terms_of_Payment__c')
+    
     # Query Contract (Full Query from reference script)
     contract_query = f"""
     SELECT Id, IsDeleted, Name, CreatedDate, LastModifiedDate, SystemModstamp, LastActivityDate, LastViewedDate, LastReferencedDate, Cont__c, Container_Weight_Regulations__c, Crates__c, Height__c, Length__c, Line_Number__c, Packing__c, Sales_Price__c, Tons__c, Width__c, List_Price__c, Discount__c, Charge_Unit__c, Quantity__c, m2__c, m3__c, ml__c, Total_Price_USD__c, L_PI__c, W_PI__c, H_PI__c, PCS_PI__c, Crates_PI__c, Created_Date__c, Packing_PI__c, Product_Discription__c, Charge_Unit_PI__c, Actual_Cont__c, Pending_Cont__c, Clear__c, Actual_Crates__c, Actual_m2__c, Actual_m3__c, Actual_ml__c, Actual_Quantity__c, Actual_Tons__c, Actual_Total_Price_USD__c, Pending_Crates__c, Pending_m2__c, Pending_m3__c, Pending_ml__c, Pending_Quantity__c, Pending_Tons__c, Pending_Amount_USD__c, Delivery_Date__c, Delivery_Quantity__c, Is_Delivery_Quantity_Valid__c, Delivery_Quantity_number__c, Unscheduled_Quantity__c, Line_number_For_print__c, Product__r.Id, Product__r.Name, Product__r.ProductCode, Product__r.Description, Product__r.QuantityScheduleType, Product__r.QuantityInstallmentPeriod, Product__r.NumberOfQuantityInstallments, Product__r.RevenueScheduleType, Product__r.RevenueInstallmentPeriod, Product__r.NumberOfRevenueInstallments, Product__r.IsActive, Product__r.CreatedDate, Product__r.CreatedById, Product__r.LastModifiedDate, Product__r.LastModifiedById, Product__r.SystemModstamp, Product__r.Family, Product__r.ExternalDataSourceId, Product__r.ExternalId, Product__r.DisplayUrl, Product__r.QuantityUnitOfMeasure, Product__r.IsDeleted, Product__r.IsArchived, Product__r.LastViewedDate, Product__r.LastReferencedDate, Product__r.StockKeepingUnit, Product__r.Product_description_in_Vietnamese__c, Product__r.specific_gravity__c, Product__r.Bottom_cladding_coefficient__c, Product__r.STONE_Color_Type__c, Product__r.Packing__c, Product__r.Long__c, Product__r.High__c, Product__r.Width__c, Product__r.Long_special__c, Product__r.High_special__c, Product__r.Image__c, Product__r.Charge_Unit__c, Product__r.Width_special__c, Product__r.STONE_Class__c, Product__r.Description__c, Product__r.List_Price__c, Product__r.Weight_per_unit__c, Product__r.Edge_Finish__c, Product__r.Suppliers__c, Product__r.m_per_unit__c, Product__r.Application__c, Product__r.Surface_Finish__c, Product__r.m3_per_unit__c, Product__r.Pricing_Method__c, Contract__r.Id, Contract__r.OwnerId, Contract__r.IsDeleted, Contract__r.Name, Contract__r.CreatedDate, Contract__r.CreatedById, Contract__r.LastModifiedDate, Contract__r.LastModifiedById, Contract__r.SystemModstamp, Contract__r.LastActivityDate, Contract__r.LastViewedDate, Contract__r.LastReferencedDate, Contract__r.Account__c, Contract__r.Quote__c, Contract__r.Bill_To__c, Contract__r.Bill_To_Name__c, Contract__r.Contact_Name__c, Contract__r.Expiration_Date__c, Contract__r.Export_Route_Carrier__c, Contract__r.Fax__c, Contract__r.Phone__c, Contract__r.Fumigation__c, Contract__r.Incoterms__c, Contract__r.In_words__c, Contract__r.Packing__c, Contract__r.Port_of_Discharge__c, Contract__r.REMARK_NUMBER_ON_DOCUMENTS__c, Contract__r.Shipping_Schedule__c, Contract__r.Total_Conts__c, Contract__r.Total_Crates__c, Contract__r.Total_m3__c, Contract__r.Sub_Total_USD__c, Contract__r.Total_Tons__c, Contract__r.Deposit_Percentage__c, Contract__r.Discount__c, Contract__r.Total_Price_USD__c, Contract__r.Deposit__c, Contract__r.Stage__c, Contract__r.Total_Payment_Received__c, Contract__r.Expected_ETD__c, Contract__r.Port_of_Origin__c, Contract__r.Price_Book__c, Contract__r.Stockyard__c, Contract__r.Created_Date__c, Contract__r.Total_Contract_Product__c, Contract__r.Pending_Products__c, Contract__r.Total_Payment_Received_USD__c, Contract__r.Production_Order_Number__c, Contract__r.Total_m2__c, Contract__r.Total_Pcs__c, Contract__r.Total_Pcs_PO__c, Contract__r.Planned_Shipments__c, Contract__r.Is_approved__c, Contract__r.Deposited_amount_USD__c, Contract__r.Design_confirmed__c, Contract__r.Contract_type__c, Contract__r.Fully_deposited__c, Contract__r.Discount_Amount__c, Contract__r.Terms_of_Payment__c, Contract__r.Terms_of_Sale__c, Contract__r.Total_surcharge__c FROM Contract_Product__c where Contract__r.Id = '{contract_id}' ORDER BY Line_Number__c ASC
@@ -1666,6 +1671,48 @@ def generate_pi_no_discount_file(contract_id: str, template_path: str):
         for cell in row:
             if cell.value and isinstance(cell.value, str):
                 val = cell.value
+
+                # ===== Handle Incoterms with checkbox formatting =====
+                if "{{Contract__c.Incoterms__c}}" in val:
+                    incoterms_value = full_data.get('Contract__c.Incoterms__c', '')
+                    incoterms_checkbox_text = format_picklist_checkboxes(
+                        incoterms_options, incoterms_value, uppercase=True
+                    )
+                    val = val.replace("{{Contract__c.Incoterms__c}}", incoterms_checkbox_text)
+                    if cell.alignment:
+                        new_alignment = style_copy(cell.alignment)
+                    else:
+                        new_alignment = Alignment()
+                    new_alignment.wrap_text = True
+                    cell.alignment = new_alignment
+
+                # ===== Handle Terms of Sale with checkbox formatting =====
+                if "{{Contract__c.Terms_of_Sale__c}}" in val:
+                    terms_of_sale_value = full_data.get('Contract__c.Terms_of_Sale__c', '')
+                    terms_of_sale_checkbox_text = format_picklist_checkboxes(
+                        terms_of_sale_options, terms_of_sale_value, uppercase=True
+                    )
+                    val = val.replace("{{Contract__c.Terms_of_Sale__c}}", terms_of_sale_checkbox_text)
+                    if cell.alignment:
+                        new_alignment = style_copy(cell.alignment)
+                    else:
+                        new_alignment = Alignment()
+                    new_alignment.wrap_text = True
+                    cell.alignment = new_alignment
+
+                # ===== Handle Terms of Payment with checkbox formatting =====
+                if "{{Contract__c.Terms_of_Payment__c}}" in val:
+                    terms_of_payment_value = full_data.get('Contract__c.Terms_of_Payment__c', '')
+                    terms_of_payment_checkbox_text = format_picklist_checkboxes(
+                        terms_of_payment_options, terms_of_payment_value, uppercase=True
+                    )
+                    val = val.replace("{{Contract__c.Terms_of_Payment__c}}", terms_of_payment_checkbox_text)
+                    if cell.alignment:
+                        new_alignment = style_copy(cell.alignment)
+                    else:
+                        new_alignment = Alignment()
+                    new_alignment.wrap_text = True
+                    cell.alignment = new_alignment
                 
                 # Conditional Logic
                 if_pattern = r"\{\{#if\s+([\w\.]+)\s+'=='\s+'([^']+)'\}\}(.*?)\{\{else\}\}(.*?)\{\{/if\}\}"
@@ -1823,8 +1870,8 @@ async def generate_pi_no_discount_endpoint(contract_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# --- Production Order Generation ---
 
-<<<<<<< HEAD
 def generate_production_order_file(contract_id: str, template_path: str):
     sf = get_salesforce_connection()
     
@@ -2080,13 +2127,16 @@ async def generate_production_order_endpoint(contract_id: str):
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-=======
->>>>>>> 2e4b33fb8349a3033df435f62693b9d0b3f7e352
 
 # --- Quote No Discount Generation ---
 
 def generate_quote_no_discount_file(quote_id: str, template_path: str):
     sf = get_salesforce_connection()
+
+    # Get picklist values for Quote
+    incoterms_options = get_picklist_values(sf, 'Quote', 'Incoterms__c')
+    terms_of_sale_options = get_picklist_values(sf, 'Quote', 'Terms_of_Sale__c')
+    terms_of_payment_options = get_picklist_values(sf, 'Quote', 'Terms_of_Payment__c')
     
     # Query Quote Items (Full Query)
     query = f"""
@@ -2148,6 +2198,48 @@ def generate_quote_no_discount_file(quote_id: str, template_path: str):
         for cell in row:
             if cell.value and isinstance(cell.value, str):
                 val = cell.value
+
+                # ===== Handle Incoterms with checkbox formatting =====
+                if "{{Quote.Incoterms__c}}" in val:
+                    incoterms_value = full_data.get('Quote.Incoterms__c', '')
+                    incoterms_checkbox_text = format_picklist_checkboxes(
+                        incoterms_options, incoterms_value, uppercase=True
+                    )
+                    val = val.replace("{{Quote.Incoterms__c}}", incoterms_checkbox_text)
+                    if cell.alignment:
+                        new_alignment = style_copy(cell.alignment)
+                    else:
+                        new_alignment = Alignment()
+                    new_alignment.wrap_text = True
+                    cell.alignment = new_alignment
+
+                # ===== Handle Terms of Sale with checkbox formatting =====
+                if "{{Quote.Terms_of_Sale__c}}" in val:
+                    terms_of_sale_value = full_data.get('Quote.Terms_of_Sale__c', '')
+                    terms_of_sale_checkbox_text = format_picklist_checkboxes(
+                        terms_of_sale_options, terms_of_sale_value, uppercase=True
+                    )
+                    val = val.replace("{{Quote.Terms_of_Sale__c}}", terms_of_sale_checkbox_text)
+                    if cell.alignment:
+                        new_alignment = style_copy(cell.alignment)
+                    else:
+                        new_alignment = Alignment()
+                    new_alignment.wrap_text = True
+                    cell.alignment = new_alignment
+
+                # ===== Handle Terms of Payment with checkbox formatting =====
+                if "{{Quote.Terms_of_Payment__c}}" in val:
+                    terms_of_payment_value = full_data.get('Quote.Terms_of_Payment__c', '')
+                    terms_of_payment_checkbox_text = format_picklist_checkboxes(
+                        terms_of_payment_options, terms_of_payment_value, uppercase=True
+                    )
+                    val = val.replace("{{Quote.Terms_of_Payment__c}}", terms_of_payment_checkbox_text)
+                    if cell.alignment:
+                        new_alignment = style_copy(cell.alignment)
+                    else:
+                        new_alignment = Alignment()
+                    new_alignment.wrap_text = True
+                    cell.alignment = new_alignment
                 
                 # Conditional Logic
                 if_pattern = r"\{\{#if\s+([\w\.]+)\s+'=='\s+'([^']+)'\}\}(.*?)\{\{else\}\}(.*?)\{\{/if\}\}"
@@ -2465,7 +2557,7 @@ def format_picklist_checkboxes(options, selected_value, uppercase=False):
         # Check if this option is selected
         is_selected = opt.strip().lower() == selected_value_norm
         
-        checkbox = "[x]" if is_selected else "[ ]"
+        checkbox = "☑" if is_selected else "☐"
         formatted_lines.append(f"{checkbox} {opt_label}")
         
     return "\n".join(formatted_lines)
@@ -3171,10 +3263,7 @@ async def generate_quote_no_discount_endpoint(quote_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-
 # --- Production Order Logic ---
-
 def get_production_order_data(sf, contract_id):
     if not sf:
         return None, None
@@ -3305,30 +3394,18 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
             
     if not table_start_row:
         print("Error: Table start marker {{TableStart:ProPlanProduct}} not found.")
-<<<<<<< HEAD
         return
-=======
-        return str(output_path) # Return path even if failed to fill table, or raise error
->>>>>>> 2e4b33fb8349a3033df435f62693b9d0b3f7e352
 
     num_items = len(products_data)
     
     if products_data:
         print(f"Found table start at row {table_start_row}. Expanding for {num_items} items.")
         
-<<<<<<< HEAD
         # 1. Expand table (Nếu có nhiều hơn 1 sản phẩm)
         if num_items > 1:
             ws.insert_rows(table_start_row + 1, amount=num_items - 1)
         
         # Tính lại vị trí dòng Tổng Cộng mới
-=======
-        # 1. Expand table
-        if num_items > 1:
-            ws.insert_rows(table_start_row + 1, amount=num_items - 1)
-        
-        # Calculate new total row position
->>>>>>> 2e4b33fb8349a3033df435f62693b9d0b3f7e352
         if total_row_template_idx:
             total_row = total_row_template_idx + (num_items - 1) if num_items > 0 else total_row_template_idx
         else:
@@ -3369,11 +3446,7 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
         for i, item in enumerate(products_data):
             row_idx = table_start_row + i
             
-<<<<<<< HEAD
             # CRITICAL: Unmerge cells before writing (Giữ nguyên phần này)
-=======
-            # CRITICAL: Unmerge cells before writing
->>>>>>> 2e4b33fb8349a3033df435f62693b9d0b3f7e352
             for col in range(1, 16):
                 cell = ws.cell(row=row_idx, column=col)
                 is_merged = False
@@ -3417,10 +3490,7 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
             
             desc_val = item_map["Vietnamese_Description__c"] or ""
             
-<<<<<<< HEAD
             # Handle Bold Text before Hyphen (Nếu là RichText, việc merge sẽ cần xử lý khác)
-=======
->>>>>>> 2e4b33fb8349a3033df435f62693b9d0b3f7e352
             if desc_val and '-' in str(desc_val):
                 parts = str(desc_val).split('-', 1)
                 bold_part = parts[0]
@@ -3502,14 +3572,10 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
         first_data_row = table_start_row
         last_data_row = table_start_row + len(products_data) - 1
         
-<<<<<<< HEAD
         # Dòng Tổng Cộng mới đã được tính ở trên: total_row
         
         # CRITICAL: Unmerge cells in Total row to ensure totals are visible
         # Check columns H (8) to M (13)
-=======
-        # CRITICAL: Unmerge cells in Total row to ensure totals are visible
->>>>>>> 2e4b33fb8349a3033df435f62693b9d0b3f7e352
         for col in range(8, 14):
             cell = ws.cell(row=total_row, column=col)
             is_merged = False
@@ -3597,51 +3663,6 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
         cell.value = "Ngọc Bích"
         cell.font = Font(name='Times New Roman', size=11)
         cell.alignment = Alignment(horizontal='center', vertical='center')
-            cell.font = Font(bold=True, name='Times New Roman', size=11)
-            cell.border = thin_border
-
-    # ----------------------------------------------------
-    # THÊM TÊN NGƯỜI SOẠN LỆNH & MERGE
-    # ----------------------------------------------------
-    signer_row_idx = None
-    for r in range(1, ws.max_row + 1):
-        # Check Column I
-        val_i = ws.cell(row=r, column=9).value 
-        if val_i:
-            val_str = str(val_i).upper()
-            if "NGƯỜI SOẠN LỆNH" in val_str or "NGƯỜI SOAN LỆNH" in val_str:
-                signer_row_idx = r
-                break
-        
-        # Check Column J
-        val = ws.cell(row=r, column=10).value 
-        if val:
-            val_str = str(val).upper()
-            if "NGƯỜI SOẠN LỆNH" in val_str or "NGƯỜI SOAN LỆNH" in val_str:
-                signer_row_idx = r
-                break
-        
-        # Check Column K
-        val_k = ws.cell(row=r, column=11).value 
-        if val_k:
-            val_str = str(val_k).upper()
-            if "NGƯỜI SOẠN LỆNH" in val_str or "NGƯỜI SOAN LỆNH" in val_str:
-                signer_row_idx = r
-                break
-
-    if signer_row_idx:
-        # Write "Ngọc Bích" 2 rows below, in Column I (9) and merge I-J-K (9-11)
-        target_row = signer_row_idx + 2
-        
-        # Merge cells I, J, K using string range
-        merge_range = f"I{target_row}:K{target_row}"
-        ws.merge_cells(merge_range)
-        
-        # Write value to top-left cell (Column I / 9)
-        cell = ws.cell(row=target_row, column=9)
-        cell.value = "Ngọc Bích"
-        cell.font = Font(name='Times New Roman', size=11)
-        cell.alignment = Alignment(horizontal='center', vertical='center')
 
     # ----------------------------------------------------
     # KHẮC PHỤC LỖI MERGE CELL (Giữ nguyên logic merge)
@@ -3658,24 +3679,26 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
 
     # Merge duplicate "TÊN HÀNG" (Column D / 4)
     if products_data:
-        start_row = table_start_row
-        end_row = table_start_row + len(products_data) - 1
+        start_row = table_start_row 
+        end_row = table_start_row + len(products_data) - 1 
         
         merge_start_row = start_row
-        current_val = ws.cell(row=start_row, column=4).value
+        current_val_str = get_cell_content_for_comparison(ws.cell(row=start_row, column=4))
         
-        for r in range(start_row + 1, end_row + 2):
-            val = ws.cell(row=r, column=4).value if r <= end_row else "SENTINEL"
+        for r in range(start_row + 1, end_row + 2): 
+            val_str = get_cell_content_for_comparison(ws.cell(row=r, column=4)) if r <= end_row else "SENTINEL" # Sử dụng giá trị phân biệt
             
-            should_break = (val != current_val)
+            should_break = (val_str != current_val_str)
             
             if should_break:
-                if r - 1 > merge_start_row:
+                if r - 1 > merge_start_row: 
+                    # Merge cells
                     ws.merge_cells(start_row=merge_start_row, start_column=4, end_row=r-1, end_column=4)
+                    # Giữ nguyên căn chỉnh cho ô đầu tiên sau khi merge
                     ws.cell(row=merge_start_row, column=4).alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
                 
                 merge_start_row = r
-                current_val = val
+                current_val_str = val_str
                 
     # Merge duplicate "THỜI GIAN GIAO HÀNG" (Column O / 15)
     if products_data:
@@ -3706,7 +3729,7 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
 @app.get("/generate-production-order/{contract_id}")
 async def generate_production_order_endpoint(contract_id: str):
     try:
-        template_path = os.getenv('PRODUCTION_ORDER_TEMPLATE_PATH', 'templates/production_order_template.xlsx')
+        template_path = os.getenv('PO_TEMPLATE_PATH', 'templates/production_order_template.xlsx')
         if not os.path.exists(template_path):
              raise HTTPException(status_code=404, detail=f"Production Order Template not found")
 
