@@ -3755,7 +3755,7 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
 
     wb.save(output_path)
     print(f"Filled template saved to: {output_path}")
-    
+
 @app.get("/generate-production-order/{contract_id}")
 async def generate_production_order_endpoint(contract_id: str):
     try:
