@@ -3656,6 +3656,14 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
     # ----------------------------------------------------
     signer_row_idx = None
     for r in range(1, ws.max_row + 1):
+        # Check Column H
+        val_h = ws.cell(row=r, column=8).value 
+        if val_h:
+            val_str = str(val_h).upper()
+            if "NGƯỜI SOẠN LỆNH" in val_str or "NGƯỜI SOAN LỆNH" in val_str:
+                signer_row_idx = r
+                break
+        
         # Check Column I
         val_i = ws.cell(row=r, column=9).value 
         if val_i:
@@ -3665,31 +3673,23 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
                 break
         
         # Check Column J
-        val = ws.cell(row=r, column=10).value 
-        if val:
-            val_str = str(val).upper()
-            if "NGƯỜI SOẠN LỆNH" in val_str or "NGƯỜI SOAN LỆNH" in val_str:
-                signer_row_idx = r
-                break
-        
-        # Check Column K
-        val_k = ws.cell(row=r, column=11).value 
-        if val_k:
-            val_str = str(val_k).upper()
+        val_j = ws.cell(row=r, column=10).value 
+        if val_j:
+            val_str = str(val_j).upper()
             if "NGƯỜI SOẠN LỆNH" in val_str or "NGƯỜI SOAN LỆNH" in val_str:
                 signer_row_idx = r
                 break
 
     if signer_row_idx:
-        # Write "Ngọc Bích" 2 rows below, in Column I (9) and merge I-J-K (9-11)
+        # Write "Ngọc Bích" 2 rows below, in Column H (8) and merge H-J (8-10)
         target_row = signer_row_idx + 2
         
-        # Merge cells I, J, K using string range
-        merge_range = f"I{target_row}:K{target_row}"
+        # Merge cells H, I, J using string range
+        merge_range = f"H{target_row}:J{target_row}"
         ws.merge_cells(merge_range)
         
-        # Write value to top-left cell (Column I / 9)
-        cell = ws.cell(row=target_row, column=9)
+        # Write value to top-left cell (Column H / 8)
+        cell = ws.cell(row=target_row, column=8)
         cell.value = "Ngọc Bích"
         cell.font = Font(name='Times New Roman', size=11)
         cell.alignment = Alignment(horizontal='center', vertical='center')
@@ -3755,7 +3755,7 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
 
     wb.save(output_path)
     print(f"Filled template saved to: {output_path}")
-
+    
 @app.get("/generate-production-order/{contract_id}")
 async def generate_production_order_endpoint(contract_id: str):
     try:
