@@ -1682,6 +1682,30 @@ def generate_pi_no_discount_file(contract_id: str, template_path: str):
             "Surcharge_amount_USD__c": item.get('Surcharge_amount_USD__c')
         })
 
+    # Determine Template based on Discount
+    discount_val = contract.get('Discount__c')
+    discount_amt = contract.get('Discount_Amount__c')
+    
+    has_discount = False
+    for v in (discount_val, discount_amt):
+        if v not in (None, 0, 0.0, "", "0", "0.0"):
+            has_discount = True
+            break
+            
+    if has_discount:
+        template_path = "templates/proforma_invoice_template_new.xlsx"
+    else:
+        template_path = "templates/proforma_invoice_template_no_discount.xlsx"
+
+    # Verify template exists
+    if not os.path.exists(template_path):
+        # Fallback to check root directory
+        base_name = os.path.basename(template_path)
+        if os.path.exists(base_name):
+            template_path = base_name
+        else:
+            print(f"Warning: Template {template_path} not found, falling back to original argument or risking error.")
+
     # Load Template
     wb = openpyxl.load_workbook(template_path)
     ws = wb.active
@@ -2196,6 +2220,30 @@ def generate_quote_no_discount_file(quote_id: str, template_path: str):
     # Inject Sequential Number
     for idx, item in enumerate(quote_items):
         item['Quote_Line_Item_Number_Quote__c'] = idx + 1
+
+    # Determine Template based on Discount
+    discount_val = quote_data.get('Discount')
+    discount_amt = quote_data.get('Discount_Amount__c') # Check field name from query
+    
+    has_discount = False
+    for v in (discount_val, discount_amt):
+        if v not in (None, 0, 0.0, "", "0", "0.0"):
+            has_discount = True
+            break
+            
+    if has_discount:
+        template_path = "templates/quotation_template_new.xlsx"
+    else:
+        template_path = "templates/quotation_template_no_discount.xlsx"
+
+    # Verify template exists
+    if not os.path.exists(template_path):
+        # Fallback to check root directory
+        base_name = os.path.basename(template_path)
+        if os.path.exists(base_name):
+            template_path = base_name
+        else:
+             print(f"Warning: Template {template_path} not found, falling back to original argument or risking error.")
 
     wb = openpyxl.load_workbook(template_path)
     ws = wb.active
