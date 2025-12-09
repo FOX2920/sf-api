@@ -3250,7 +3250,24 @@ def generate_quote_no_discount_logic(quote_id, template_path):
     file_name = f"Quote_{quote_data.get('Name')}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     file_path = output_dir / file_name
     wb.save(str(file_path))
-    return str(file_path)
+
+    # Upload to Salesforce
+    with open(file_path, "rb") as f:
+        file_data = f.read()
+    encoded = base64.b64encode(file_data).decode("utf-8")
+    
+    content_version = sf.ContentVersion.create({
+        "Title": file_name.rsplit(".", 1)[0],
+        "PathOnClient": file_name,
+        "VersionData": encoded,
+        "FirstPublishLocationId": quote_id
+    })
+    
+    return {
+        "file_path": str(file_path),
+        "file_name": file_name,
+        "salesforce_content_version_id": content_version["id"]
+    }
 
 @app.get("/generate-quote-no-discount/{quote_id}")
 async def generate_quote_no_discount_endpoint(quote_id: str):
