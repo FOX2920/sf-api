@@ -2840,7 +2840,24 @@ def generate_pi_no_discount_logic(contract_id, template_path):
     file_name = f"PI_{contract_data.get('Name')}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     file_path = output_dir / file_name
     wb.save(str(file_path))
-    return str(file_path)
+
+    # Upload to Salesforce
+    with open(file_path, "rb") as f:
+        file_data = f.read()
+    encoded = base64.b64encode(file_data).decode("utf-8")
+    
+    content_version = sf.ContentVersion.create({
+        "Title": file_name.rsplit(".", 1)[0],
+        "PathOnClient": file_name,
+        "VersionData": encoded,
+        "FirstPublishLocationId": contract_id
+    })
+    
+    return {
+        "file_path": str(file_path),
+        "file_name": file_name,
+        "salesforce_content_version_id": content_version["id"]
+    }
 
 @app.get("/generate-pi-no-discount/{contract_id}")
 async def generate_pi_no_discount_endpoint(contract_id: str):
@@ -2852,8 +2869,8 @@ async def generate_pi_no_discount_endpoint(contract_id: str):
              if not os.path.exists(template_path):
                  raise HTTPException(status_code=404, detail=f"PI Template not found")
 
-        file_path = generate_pi_no_discount_logic(contract_id, template_path)
-        return FileResponse(file_path, filename=os.path.basename(file_path), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        result = generate_pi_no_discount_logic(contract_id, template_path)
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -3242,8 +3259,8 @@ async def generate_quote_no_discount_endpoint(quote_id: str):
         if not os.path.exists(template_path):
              raise HTTPException(status_code=404, detail=f"Quote Template not found")
 
-        file_path = generate_quote_no_discount_logic(quote_id, template_path)
-        return FileResponse(file_path, filename=os.path.basename(file_path), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        result = generate_quote_no_discount_logic(quote_id, template_path)
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -3729,7 +3746,23 @@ async def generate_production_order_endpoint(contract_id: str):
         
         fill_production_order_template(template_path, str(file_path), contract_data, products_data)
         
-        return FileResponse(str(file_path), filename=os.path.basename(file_path), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        # Upload to Salesforce
+        with open(file_path, "rb") as f:
+            file_data = f.read()
+        encoded = base64.b64encode(file_data).decode("utf-8")
+        
+        content_version = sf.ContentVersion.create({
+            "Title": file_name.rsplit(".", 1)[0],
+            "PathOnClient": file_name,
+            "VersionData": encoded,
+            "FirstPublishLocationId": contract_id
+        })
+        
+        return {
+            "file_path": str(file_path),
+            "file_name": file_name,
+            "salesforce_content_version_id": content_version["id"]
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
