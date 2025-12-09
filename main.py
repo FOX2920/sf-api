@@ -161,6 +161,16 @@ def get_output_directory() -> Path:
     
     return output_dir
 
+def sanitize_filename(filename):
+    """
+    Sanitize the filename by removing or replacing invalid characters.
+    """
+    if not filename:
+        return "Unknown"
+    # Replace invalid characters with underscore
+    return re.sub(r'[\\/*?:"<>|]', '_', str(filename)).strip()
+
+
 def format_picklist_checkboxes(options, selected_value, uppercase=False):
     """
     Format picklist options as a checkbox list.
@@ -2837,7 +2847,8 @@ def generate_pi_no_discount_logic(contract_id, template_path):
                 break
 
     output_dir = get_output_directory()
-    file_name = f"PI_{contract_data.get('Name')}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    safe_name = sanitize_filename(contract_data.get('Name'))
+    file_name = f"PI_{safe_name}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     file_path = output_dir / file_name
     wb.save(str(file_path))
 
@@ -3247,7 +3258,8 @@ def generate_quote_no_discount_logic(quote_id, template_path):
                 break
 
     output_dir = get_output_directory()
-    file_name = f"Quote_{quote_data.get('Name')}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    safe_name = sanitize_filename(quote_data.get('Name'))
+    file_name = f"Quote_{safe_name}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     file_path = output_dir / file_name
     wb.save(str(file_path))
 
@@ -3758,7 +3770,8 @@ async def generate_production_order_endpoint(contract_id: str):
             raise HTTPException(status_code=404, detail=f"Contract not found: {contract_id}")
 
         output_dir = get_output_directory()
-        file_name = f"Production_Order_{contract_data.get('Production_Order_Number__c', contract_data.get('Name'))}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        safe_name = sanitize_filename(contract_data.get('Production_Order_Number__c', contract_data.get('Name')))
+        file_name = f"Production_Order_{safe_name}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         file_path = output_dir / file_name
         
         fill_production_order_template(template_path, str(file_path), contract_data, products_data)
