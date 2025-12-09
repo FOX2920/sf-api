@@ -21,6 +21,16 @@ load_dotenv()
 
 app = FastAPI(title="Salesforce Packing List API")
 
+# Add CORS Middleware
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
 class ShipmentRequest(BaseModel):
     shipment_id: str
 
@@ -2113,20 +2123,7 @@ def generate_production_order_file(contract_id: str, template_path: str):
         "salesforce_content_version_id": content_version["id"]
     }
 
-@app.get("/generate-production-order/{contract_id}")
-async def generate_production_order_endpoint(contract_id: str):
-    try:
-        template_path = os.getenv('PRODUCTION_ORDER_TEMPLATE_PATH', 'templates/production_order_template.xlsx')
-        if not os.path.exists(template_path):
-             if os.path.exists('production_order_template.xlsx'):
-                 template_path = 'production_order_template.xlsx'
-             else:
-                 raise HTTPException(status_code=404, detail=f"Template not found: {template_path}")
-        
-        result = generate_production_order_file(contract_id, template_path)
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+
 
 # --- Quote No Discount Generation ---
 
@@ -2377,20 +2374,7 @@ def generate_quote_no_discount_file(quote_id: str, template_path: str):
         "salesforce_content_version_id": content_version["id"]
     }
 
-@app.get("/generate-quote-no-discount/{quote_id}")
-async def generate_quote_no_discount_endpoint(quote_id: str):
-    try:
-        template_path = os.getenv('QUOTE_NO_DISCOUNT_TEMPLATE_PATH', 'templates/quotation_template_no_discount.xlsx')
-        if not os.path.exists(template_path):
-             if os.path.exists('quotation_template_no_discount.xlsx'):
-                 template_path = 'quotation_template_no_discount.xlsx'
-             else:
-                 raise HTTPException(status_code=404, detail=f"Template not found: {template_path}")
-        
-        result = generate_quote_no_discount_file(quote_id, template_path)
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+
 
 # ==========================================
 # NEW ENDPOINTS: PI, Quote, Production Order
