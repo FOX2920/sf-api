@@ -15,6 +15,7 @@ from openpyxl.styles import Alignment, Border, Side, Font
 from openpyxl.cell.rich_text import CellRichText, TextBlock
 from openpyxl.cell.text import InlineFont
 from pathlib import Path
+from num2words import num2words
 
 # Load environment variables
 load_dotenv()
@@ -4038,6 +4039,17 @@ async def generate_production_order_endpoint(contract_id: str):
             "file_name": file_name,
             "salesforce_content_version_id": content_version["id"]
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+        
+@app.get("/num-to-words")
+async def get_num_to_words(amount: float):
+    try:
+        # Chuyển đổi số sang chữ (tiếng Anh, định dạng USD)
+        text_value = num2words(amount, to='currency', currency='USD')
+        
+        # Chỉ trả về text_raw
+        return {"text_raw": text_value}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
