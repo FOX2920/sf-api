@@ -1682,6 +1682,40 @@ def generate_pi_no_discount_file(contract_id: str, template_path: str):
             "Surcharge_amount_USD__c": item.get('Surcharge_amount_USD__c')
         })
 
+    # Query Deposits (Receipt_Reconciliation__c)
+    deposit_query = f"SELECT Id, Name, Reconciled_Amount__c, Contract_PI__r.Name FROM Receipt_Reconciliation__c WHERE Contract_PI__r.Id = '{contract_id}'"
+    try:
+        dep_result = sf.query_all(deposit_query)
+        deposit_records = dep_result['records']
+    except Exception as e:
+        deposit_records = []
+    
+    deposit_items = []
+    for item in deposit_records:
+        deposit_items.append({
+            "Name": item.get('Name'),
+            "Reconciled_Amount__c": item.get('Reconciled_Amount__c'),
+            "Contract_PI__r.Name": item.get('Contract_PI__r', {}).get('Name')
+        })
+
+    # Query Discounts (Discount_Item__c - Placeholder)
+    discount_items = []
+    try:
+        discount_query = f"SELECT Id, Name, Discount_Amount__c FROM Discount_Item__c WHERE Contract_PI__r.Id = '{contract_id}'"
+        disc_result = sf.query_all(discount_query)
+        discount_records = disc_result['records']
+        for item in discount_records:
+            val = item.get('Discount_Amount__c')
+            if val is not None:
+                try: val = float(val)
+                except: pass
+            discount_items.append({
+                "Name": item.get('Name'),
+                "Discount_Amount__c": val
+            })
+    except Exception:
+        pass # Ignore if object doesn't exist
+
     # Determine Template based on Discount
     discount_val = contract.get('Discount__c')
     discount_amt = contract.get('Discount_Amount__c')
@@ -1776,7 +1810,9 @@ def generate_pi_no_discount_file(contract_id: str, template_path: str):
                     "{{Contract__c.Total_Tons__c}}", "{{Contract__c.Total_Conts__c}}",
                     "{{Contract__c.Sub_Total_USD__c\\# #,##0.##}}",
                     "{{Contract__c.Total_Price_USD__c\\# #,##0.##}}",
-                    "{{Contract__c.Deposit__c\\# #,##0.##}}"
+                    "{{Contract__c.Deposit__c\\# #,##0.##}}",
+                    "{{Contract__c.Discount_Amount__c\\# #,##0.##}}",
+                    "{{Contract__c.Discount_Amount__c}}"
                 ]
                 is_float_field = False
                 for field in float_fields:
@@ -1836,7 +1872,13 @@ def generate_pi_no_discount_file(contract_id: str, template_path: str):
                     if r - 1 > merge_start_row:
                         ws.merge_cells(start_row=merge_start_row, start_column=col_b_idx, end_row=r-1, end_column=col_b_idx)
                         ws.cell(row=merge_start_row, column=col_b_idx).alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
-                    
+                        
+                        # Merge K, L, M (11, 12, 13)
+                        for col_idx in [11, 12, 13]:
+                            ws.merge_cells(start_row=merge_start_row, start_column=col_idx, end_row=r-1, end_column=col_idx)
+                            # Center alignment for merged price/amount cells
+                            ws.cell(row=merge_start_row, column=col_idx).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
                     merge_start_row = r
                     current_val = val
 
@@ -1861,22 +1903,101 @@ def generate_pi_no_discount_file(contract_id: str, template_path: str):
                 except: pass
 
     # Fill Surcharges
-    expand_table_by_tag(ws, "{{TableStart:PISurcharge}}", "{{TableEnd:PISurcharge}}", surcharge_items)
+    sur_start = expand_table_by_tag(ws, "{{TableStart:PISurcharge}}", "{{TableEnd:PISurcharge}}", surcharge_items)
+    if sur_start and surcharge_items:
+        for i in range(len(surcharge_items)):
+            r = sur_start + i
+            ws.merge_cells(start_row=r, start_column=11, end_row=r, end_column=13)
 
-    # Footer Row Height
-    for row in ws.iter_rows():
-        for cell in row:
-            if cell.value and isinstance(cell.value, str) and "All prices quoted herein" in cell.value:
-                ws.row_dimensions[cell.row].height = 50
-                ws.row_dimensions[cell.row + 1].height = 50
-                break
+    # Fill Deposits
+    dep_start = expand_table_by_tag(ws, "{{TableStart:PIDeposit}}", "{{TableEnd:PIDeposit}}", deposit_items)
+    if dep_start and deposit_items:
+        for i in range(len(deposit_items)):
+            r = dep_start + i
+            ws.merge_cells(start_row=r, start_column=11, end_row=r, end_column=13)
 
-    # Save
-    now = datetime.datetime.now()
-    timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
-    safe_name = sanitize_filename(contract.get('Name'))
-    file_name = f"PI_NoDiscount_{safe_name}_{timestamp}.xlsx"
+    # Fill Discounts
+    disc_start = expand_table_by_tag(ws, "{{TableStart:PIDiscount}}", "{{TableEnd:PIDiscount}}", discount_items)
+    if disc_start and discount_items:
+        for i in range(len(discount_items)):
+            r = disc_start + i
+            ws.merge_cells(start_row=r, start_column=11, end_row=r, end_column=13)
+
+    # -------------------------------------------------------------------------
+    # SỬA ĐỔI: LOGIC MERGE CỘT A-J (1-10) TỰ ĐỘNG THEO SUBTOTAL VÀ TOTAL
+    # -------------------------------------------------------------------------
+    from openpyxl.styles import Alignment
+    
+    start_merge_row = None
+    end_merge_row = None
+
+    # Quét qua các dòng để tìm vị trí thực tế của Subtotal và Total
+    # Vì các bảng ở trên (Surcharge, Discount...) có thể giãn ra, số dòng sẽ thay đổi.
+    for r in range(1, ws.max_row + 1):
+        # Lấy nội dung text của cả dòng để kiểm tra từ khóa
+        row_text_u = ""
+        for c in range(1, 15): # Quét 15 cột đầu
+            val = ws.cell(row=r, column=c).value
+            if val:
+                row_text_u += str(val).upper()
+        
+        # 1. Tìm dòng bắt đầu (SUBTOTAL)
+        # Kiểm tra từ khóa: SUBTOTAL, SUB TOTAL, SUB-TOTAL
+        if "SUBTOTAL" in row_text_u or "SUB TOTAL" in row_text_u or "SUB-TOTAL" in row_text_u:
+            # Chỉ lấy dòng Subtotal đầu tiên tìm thấy sau khi các bảng đã giãn
+            if start_merge_row is None:
+                start_merge_row = r
+        
+        # 2. Tìm dòng kết thúc (TOTAL)
+        # Kiểm tra từ khóa: TOTAL (tránh Subtotal), TỔNG CỘNG, GRAND TOTAL
+        # Lưu ý: "TOTAL" phải nằm dưới "SUBTOTAL"
+        if ("TOTAL" in row_text_u and "SUB" not in row_text_u) or "TỔNG CỘNG" in row_text_u or "GRAND TOTAL" in row_text_u:
+            if start_merge_row is not None and r > start_merge_row:
+                end_merge_row = r
+                # Nếu tìm thấy Total hợp lệ thì có thể dừng vòng lặp hoặc tiếp tục để tìm Total cuối cùng (nếu có nhiều block)
+                # Ở đây ta giả định PI chỉ có 1 phần tổng ở cuối, nên ta cập nhật end_merge_row liên tục nếu có nhiều dòng Total
+    
+    # Thực hiện Merge nếu tìm thấy cả 2 mốc
+    if start_merge_row and end_merge_row and end_merge_row > start_merge_row:
+        # Phạm vi cột cần merge: A (1) đến J (10)
+        min_col, max_col = 1, 10
+        
+        # Bước 1: Unmerge (Gỡ bỏ) các ô đã merge sẵn nằm trong vùng này để tránh lỗi
+        ranges_to_unmerge = []
+        for mr in ws.merged_cells.ranges:
+            # Kiểm tra xem vùng merge có giao nhau với vùng ta chuẩn bị merge không
+            if (mr.min_row <= end_merge_row and mr.max_row >= start_merge_row and
+                mr.min_col <= max_col and mr.max_col >= min_col):
+                ranges_to_unmerge.append(mr)
+        
+        for mr in ranges_to_unmerge:
+            try:
+                ws.unmerge_cells(str(mr))
+            except Exception as e:
+                pass # Bỏ qua lỗi nếu ô đó không thực sự merge
+
+        # Bước 2: Thực hiện Merge từ dòng Subtotal đến dòng Total
+        try:
+            ws.merge_cells(start_row=start_merge_row, start_column=1, end_row=end_merge_row, end_column=10)
+            
+            # Bước 3: Căn chỉnh lại text (Căn trái, lên trên)
+            cell = ws.cell(row=start_merge_row, column=1)
+            cell.alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+            
+            print(f"Merged A-J from row {start_merge_row} (Subtotal) to {end_merge_row} (Total)")
+        except Exception as e:
+            print(f"Merge error A-J: {e}")
+    else:
+        print("Warning: Could not identify Subtotal and Total rows to merge A-J columns.")
+
+    # -------------------------------------------------------------------------
+    # END MERGE LOGIC
+    # -------------------------------------------------------------------------
+
     output_dir = get_output_directory()
+    safe_name = sanitize_filename(contract.get('Name'))
+    prefix = "PI_Discount_" if has_discount else "PI_NoDiscount_"
+    file_name = f"{prefix}{safe_name}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     file_path = output_dir / file_name
     wb.save(str(file_path))
     
@@ -2221,6 +2342,24 @@ def generate_quote_no_discount_file(quote_id: str, template_path: str):
     for idx, item in enumerate(quote_items):
         item['Quote_Line_Item_Number_Quote__c'] = idx + 1
 
+    # Query Discounts (Discount_Item__c - Placeholder)
+    discount_items = []
+    try:
+        discount_query = f"SELECT Id, Name, Discount_Amount__c FROM Discount_Item__c WHERE Quote__c = '{quote_id}'"
+        disc_result = sf.query_all(discount_query)
+        discount_records = disc_result['records']
+        for item in discount_records:
+            val = item.get('Discount_Amount__c')
+            if val is not None:
+                try: val = float(val)
+                except: pass
+            discount_items.append({
+                "Name": item.get('Name'),
+                "Discount_Amount__c": val
+            })
+    except Exception:
+        pass
+
     # Determine Template based on Discount
     discount_val = quote_data.get('Discount')
     discount_amt = quote_data.get('Discount_Amount__c') # Check field name from query
@@ -2313,7 +2452,9 @@ def generate_quote_no_discount_file(quote_id: str, template_path: str):
                     "{{Quote.Total_Crates__c}}", "{{Quote.Total_m3__c}}",
                     "{{Quote.Total_Tons__c}}", "{{Quote.Total_Conts__c}}",
                     "{{Quote.Sub_Total_USD__c\\# #,##0.##}}",
-                    "{{Quote.Total_Price_USD__c\\# #,##0.##}}"
+                    "{{Quote.Total_Price_USD__c\\# #,##0.##}}",
+                    "{{Quote.Discount_Amount__c\\# #,##0.##}}",
+                    "{{Quote.Discount_Amount__c}}"
                 ]
                 is_float_field = False
                 for field in float_fields:
@@ -2352,6 +2493,61 @@ def generate_quote_no_discount_file(quote_id: str, template_path: str):
 
     # Fill Product Table
     table_start_row = expand_table_by_tag(ws, "{{TableStart:GetQuoteLine}}", "{{TableEnd:GetQuoteLine}}", quote_items)
+
+    # Fill Discounts
+    disc_start = expand_table_by_tag(ws, "{{TableStart:QuoteDiscount}}", "{{TableEnd:QuoteDiscount}}", discount_items)
+    if disc_start and discount_items:
+        for i in range(len(discount_items)):
+            r = disc_start + i
+            ws.merge_cells(start_row=r, start_column=11, end_row=r, end_column=13)
+
+    # Merge Cols A-J (1-10) from "All prices quoted herein" down to "TOTAL"
+    from openpyxl.styles import Alignment
+    start_merge_row = None
+    end_merge_row = None
+
+    # Find start row ("All prices quoted herein" or similar)
+    for r in range(1, ws.max_row + 1):
+        cell_val = ws.cell(row=r, column=1).value
+        if cell_val and isinstance(cell_val, str) and ("All prices quoted herein" in cell_val or "Prices quoted herein" in cell_val):
+            start_merge_row = r
+            break
+            
+    # Find end row ("TOTAL")
+    if start_merge_row:
+        for r in range(start_merge_row, ws.max_row + 1):
+            found_total = False
+            for c in range(11, 16): # Check deeper K-O
+                val = ws.cell(row=r, column=c).value
+                if val and isinstance(val, str) and "TOTAL" in val.upper():
+                    end_merge_row = r
+                    found_total = True
+                    break
+            if found_total:
+                break
+                
+    if start_merge_row and end_merge_row and end_merge_row > start_merge_row:
+        # Define range
+        min_row, max_row = start_merge_row, end_merge_row
+        min_col, max_col = 1, 10
+        
+        # Unmerge overlapping ranges
+        ranges_to_unmerge = []
+        for mr in ws.merged_cells.ranges:
+            if (mr.min_row <= max_row and mr.max_row >= min_row and
+                mr.min_col <= max_col and mr.max_col >= min_col):
+                ranges_to_unmerge.append(mr)
+        
+        for mr in ranges_to_unmerge:
+            try: ws.unmerge_cells(str(mr))
+            except: pass
+
+        try:
+             ws.merge_cells(start_row=start_merge_row, start_column=1, end_row=end_merge_row, end_column=10)
+             cell = ws.cell(row=start_merge_row, column=1)
+             cell.alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+        except Exception as e:
+            print(f"Merge error: {e}")
 
     if table_start_row and quote_items:
         # Merge duplicate "TÊN HÀNG" (Column B / 2) - MỚI
@@ -2409,7 +2605,8 @@ def generate_quote_no_discount_file(quote_id: str, template_path: str):
     now = datetime.datetime.now()
     timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
     safe_name = sanitize_filename(quote_data.get('Name'))
-    file_name = f"Quote_NoDiscount_{safe_name}_{timestamp}.xlsx"
+    prefix = "Quote_Discount_" if has_discount else "Quote_NoDiscount_"
+    file_name = f"{prefix}{safe_name}_{timestamp}.xlsx"
     output_dir = get_output_directory()
     file_path = output_dir / file_name
     wb.save(str(file_path))
