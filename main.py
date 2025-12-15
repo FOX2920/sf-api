@@ -3548,7 +3548,7 @@ def get_production_order_data(sf, contract_id):
     contract_query = f"""
         SELECT Id, Production_Order_Number__c, Name, CreatedDate, Port_of_Origin__c, 
                Port_of_Discharge__c, Stockyard__c, Total_Pcs_PO__c, Total_Crates__c, 
-               Total_m2__c, Total_m3__c, Total_Tons__c, Total_Conts__c
+               Total_m2__c, Total_m3__c, Total_Tons__c, Total_Conts__c, Terms_of_Sale__c
         FROM Contract__c 
         WHERE Id = '{contract_id}'
     """
