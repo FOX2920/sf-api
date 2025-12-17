@@ -17,7 +17,6 @@ from openpyxl.cell.text import InlineFont
 from pathlib import Path
 from num2words import num2words
 from sf_case_syncbase import sync_single_case
-
 # Load environment variables
 load_dotenv()
 
