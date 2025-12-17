@@ -16,6 +16,7 @@ from openpyxl.cell.rich_text import CellRichText, TextBlock
 from openpyxl.cell.text import InlineFont
 from pathlib import Path
 from num2words import num2words
+from sf_case_syncbase import sync_single_case
 
 # Load environment variables
 load_dotenv()
@@ -4051,6 +4052,60 @@ async def get_num_to_words(amount: float):
         # Chỉ trả về text_raw
         return {"text_raw": text_value}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/sync-case-to-base/{case_id}")
+async def sync_case_to_base_endpoint(case_id: str):
+    """
+    Find Case by ID in Salesforce and sync to Base Workflow.
+    """
+    try:
+        sf = get_salesforce_connection()
+        
+        # Query specific fields needed for Base Sync
+        query = f"""
+            SELECT
+                Id, CaseNumber, Subject, CreatedDate,
+                So_LSX__c, Date_Export__c, Link_BM02__c,
+                Number_Container__c, Customer_Complain_Content__c,
+                Account.Account_Code__c
+            FROM Case
+            WHERE Id = '{case_id}'
+        """
+        
+        result = sf.query_all(query)
+        records = result['records']
+        
+        if not records:
+            raise HTTPException(status_code=404, detail=f"Case with ID {case_id} not found in Salesforce")
+            
+        case_record = records[0]
+        
+        # Format data as expected by sync_single_case
+        account_info = case_record.get('Account')
+        account_code = account_info.get('Account_Code__c') if account_info else None
+        
+        # Create a dict resembling the pandas record that sync_single_case expects
+        row_data = {
+            "Subject": case_record.get("Subject"),
+            "Account_Code": account_code,
+            "CreatedDate": case_record.get("CreatedDate"),
+            "Customer_Complain_Content__c": case_record.get("Customer_Complain_Content__c"),
+            "Number_Container__c": case_record.get("Number_Container__c"),
+            "So_LSX__c": case_record.get("So_LSX__c"),
+            "Link_BM02__c": case_record.get("Link_BM02__c")
+        }
+        
+        # Call the sync function
+        sync_result = sync_single_case(row_data)
+        
+        return {
+            "status": "success",
+            "data": sync_result
+        }
+        
+    except Exception as e:
+        print(f"Error syncing case: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
