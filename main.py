@@ -16,7 +16,8 @@ from openpyxl.cell.rich_text import CellRichText, TextBlock
 from openpyxl.cell.text import InlineFont
 from pathlib import Path
 from num2words import num2words
-from sf_case_syncbase import sync_single_case
+import requests
+
 # Load environment variables
 load_dotenv()
 
@@ -4053,58 +4054,148 @@ async def get_num_to_words(amount: float):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/sync-case-to-base/{case_id}")
-async def sync_case_to_base_endpoint(case_id: str):
+# --- Base.vn Sync Logic ---
+
+def format_date_for_base(iso_date):
+    """Convert Salesforce ISO date to dd/mm/yyyy for Base"""
+    if not iso_date:
+        return ""
+    try:
+        dt_str = str(iso_date).split('.')[0]
+        if 'T' in dt_str:
+            dt_obj = datetime.datetime.strptime(dt_str, "%Y-%m-%dT%H:%M:%S")
+        else:
+             dt_obj = datetime.datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+        return dt_obj.strftime("%d/%m/%Y")
+    except Exception:
+        return iso_date
+
+def fetch_base_jobs_map(workflow_id, access_token):
+    """Fetch all jobs from Base to map Name -> ID"""
+    url_list = os.getenv('BASE_WORKFLOW_URL_LIST', "https://workflow.base.vn/extapi/v1/workflow/jobs")
+    name_id_map = {}
+    page_id = 0
+    page_size = 50
+    
+    while True:
+        payload = {
+            "access_token": access_token,
+            "id": workflow_id,
+            "page_id": page_id,
+            "page_size": page_size
+        }
+        try:
+            resp = requests.post(url_list, data=payload, timeout=30)
+            if resp.status_code != 200:
+                print(f"Error fetching Base jobs: {resp.text}")
+                break
+            
+            data = resp.json()
+            jobs = data.get('jobs', [])
+            if not jobs:
+                break
+                
+            for job in jobs:
+                job_name = job.get('name', '').strip()
+                job_id = job.get('id')
+                if job_name:
+                    name_id_map[job_name] = job_id
+            
+            page_id += 1
+            
+        except Exception as e:
+            print(f"Exception fetching Base jobs: {e}")
+            break
+            
+    return name_id_map
+
+@app.get("/sync-base-workflow")
+async def sync_base_workflow(case_id: str = None):
     """
-    Find Case by ID in Salesforce and sync to Base Workflow.
+    Sync Salesforce Case to Base Workflow.
     """
     try:
+        base_token = os.getenv('BASE_ACCESS_TOKEN')
+        workflow_id = os.getenv('BASE_WORKFLOW_ID', '11180')
+        url_create = os.getenv('BASE_WORKFLOW_URL_CREATE', "https://workflow.base.vn/extapi/v1/job/create")
+        url_edit = os.getenv('BASE_WORKFLOW_URL_EDIT', "https://workflow.base.vn/extapi/v1/job/edit")
+        creator = os.getenv('BASE_CREATOR_USERNAME', 'PhuongTran')
+        followers_str = os.getenv('BASE_FOLLOWERS_LIST', "['bichnguyen', 'PhuongTran', 'tungpham']")
+        
+        followers = followers_str
+
+        if not base_token:
+            raise HTTPException(status_code=500, detail="BASE_ACCESS_TOKEN not set")
+
         sf = get_salesforce_connection()
         
-        # Query specific fields needed for Base Sync
-        query = f"""
-            SELECT
-                Id, CaseNumber, Subject, CreatedDate,
-                So_LSX__c, Date_Export__c, Link_BM02__c,
-                Number_Container__c, Customer_Complain_Content__c,
-                Account.Account_Code__c
-            FROM Case
-            WHERE Id = '{case_id}'
-        """
+        query_fields = "Id, CaseNumber, Subject, CreatedDate, So_LSX__c, Date_Export__c, Link_BM02__c, Number_Container__c, Customer_Complain_Content__c, Account.Account_Code__c"
         
-        result = sf.query_all(query)
-        records = result['records']
-        
-        if not records:
-            raise HTTPException(status_code=404, detail=f"Case with ID {case_id} not found in Salesforce")
+        if case_id:
+            query = f"SELECT {query_fields} FROM Case WHERE Id = '{case_id}'"
+        else:
+            query = f"SELECT {query_fields} FROM Case ORDER BY CreatedDate DESC LIMIT 1"
             
-        case_record = records[0]
+        result = sf.query_all(query)
+        if not result['records']:
+            return {"status": "error", "message": "No case found"}
+            
+        case_record = result['records'][0]
         
-        # Format data as expected by sync_single_case
-        account_info = case_record.get('Account')
-        account_code = account_info.get('Account_Code__c') if account_info else None
+        subject = case_record.get('Subject')
+        if not subject:
+             return {"status": "error", "message": "Case has no Subject"}
+        subject = subject.strip()
         
-        # Create a dict resembling the pandas record that sync_single_case expects
-        row_data = {
-            "Subject": case_record.get("Subject"),
-            "Account_Code": account_code,
-            "CreatedDate": case_record.get("CreatedDate"),
-            "Customer_Complain_Content__c": case_record.get("Customer_Complain_Content__c"),
-            "Number_Container__c": case_record.get("Number_Container__c"),
-            "So_LSX__c": case_record.get("So_LSX__c"),
-            "Link_BM02__c": case_record.get("Link_BM02__c")
+        account_code = ""
+        if case_record.get('Account'):
+             account_code = case_record['Account'].get('Account_Code__c', "")
+             
+        payload = {
+            "access_token": base_token,
+            "name": subject,
+            "custom_ma_khach_hang": account_code,
+            "custom_ngay_phan_anh": format_date_for_base(case_record.get("CreatedDate")),
+            "custom_noi_dung_khieu_nai": case_record.get("Customer_Complain_Content__c", ""),
+            "custom_so_container": case_record.get("Number_Container__c", ""),
+            "custom_so_lenh_san_xuat": case_record.get("So_LSX__c", ""),
+            "custom_chi_tiet_thong_tin_khieu_nai": case_record.get("Link_BM02__c", "")
         }
         
-        # Call the sync function
-        sync_result = sync_single_case(row_data)
+        base_jobs_map = fetch_base_jobs_map(workflow_id, base_token)
         
-        return {
-            "status": "success",
-            "data": sync_result
-        }
-        
+        if subject in base_jobs_map:
+            job_id_base = base_jobs_map[subject]
+            payload['id'] = job_id_base
+            resp = requests.post(url_edit, data=payload)
+            action = "UPDATE"
+        else:
+            payload['workflow_id'] = workflow_id
+            payload['creator_username'] = creator
+            payload['followers'] = followers
+            resp = requests.post(url_create, data=payload)
+            action = "CREATE"
+            
+        try:
+            resp_json = resp.json()
+        except:
+            resp_json = resp.text
+
+        if resp.status_code == 200:
+            return {
+                "status": "success", 
+                "action": action, 
+                "case_subject": subject,
+                "base_response": resp_json
+            }
+        else:
+            return {
+                "status": "error",
+                "action": action,
+                "message": f"Base API Error: {resp.text}"
+            }
+
     except Exception as e:
-        print(f"Error syncing case: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
