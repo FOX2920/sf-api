@@ -15,7 +15,7 @@ from openpyxl.styles import Alignment, Border, Side, Font
 from openpyxl.cell.rich_text import CellRichText, TextBlock
 from openpyxl.cell.text import InlineFont
 from pathlib import Path
-from num2words import num2words
+
 import requests
 
 # Load environment variables
@@ -1619,6 +1619,55 @@ def adjust_row_height_for_merged_cell(ws, start_row, end_row, col_idx, text):
             if h is None: h = 15
             ws.row_dimensions[r].height = h + extra_per_row
 
+# --- Helper: Number to Words (English USD) ---
+def number_to_text(n):
+    if n < 0:
+        return "Minus " + number_to_text(-n)
+    if n == 0:
+        return "Zero"
+
+    units = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine"]
+    teens = ["", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen", "Eighteen", "Nineteen"]
+    tens = ["", "Ten", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"]
+    thousands = ["", "Thousand", "Million", "Billion"]
+
+    def convert_chunk(n):
+        if n == 0: return ""
+        if n < 10: return units[n]
+        if n < 20: return teens[n - 10] if n > 10 else tens[n // 10]
+        if n < 100:
+            return tens[n // 10] + (" " + units[n % 10] if n % 10 > 0 else "")
+        return units[n // 100] + " Hundred" + (" " + convert_chunk(n % 100) if n % 100 > 0 else "")
+
+    parts = []
+    chunk_count = 0
+    while n > 0:
+        chunk = n % 1000
+        if chunk > 0:
+            part = convert_chunk(chunk)
+            if chunk_count > 0:
+                part += " " + thousands[chunk_count]
+            parts.insert(0, part)
+        n //= 1000
+        chunk_count += 1
+
+    return " ".join(parts)
+
+def amount_to_words_usd(amount):
+    try:
+        amount = float(amount)
+    except:
+        return ""
+        
+    dollars = int(amount)
+    cents = int(round((amount - dollars) * 100))
+    
+    text = number_to_text(dollars) + " US Dollars"
+    if cents > 0:
+        text += " And " + number_to_text(cents) + " Cents"
+    
+    return text.strip() + " Only"
+
 # --- PI No Discount Generation ---
 
 def generate_pi_no_discount_file(contract_id: str, template_path: str):
@@ -1727,6 +1776,15 @@ def generate_pi_no_discount_file(contract_id: str, template_path: str):
         if v not in (None, 0, 0.0, "", "0", "0.0"):
             has_discount = True
             break
+
+    # Calculate In_words if missing
+    if not full_data.get('Contract__c.In_words__c'):
+        total_price = contract.get('Total_Price_USD__c') or 0
+        try:
+            in_words = amount_to_words_usd(total_price)
+            full_data['Contract__c.In_words__c'] = in_words
+        except:
+            pass
             
     if has_discount:
         template_path = "templates/proforma_invoice_template_new.xlsx"
@@ -1980,13 +2038,19 @@ def generate_pi_no_discount_file(contract_id: str, template_path: str):
 
         # Bước 2: Thực hiện Merge từ dòng Subtotal đến dòng Total
         try:
-            ws.merge_cells(start_row=start_merge_row, start_column=1, end_row=end_merge_row, end_column=10)
+            ws.merge_cells(start_row=start_merge_row, start_column=1, end_row=end_merge_row-1, end_column=10)
+            
+            # Merge cho dòng Total riêng biệt
+            ws.merge_cells(start_row=end_merge_row, start_column=1, end_row=end_merge_row, end_column=10)
             
             # Bước 3: Căn chỉnh lại text (Căn trái, lên trên)
             cell = ws.cell(row=start_merge_row, column=1)
             cell.alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
             
-            print(f"Merged A-J from row {start_merge_row} (Subtotal) to {end_merge_row} (Total)")
+            cell_total = ws.cell(row=end_merge_row, column=1)
+            cell_total.alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+            
+            print(f"Merged A-J from row {start_merge_row} (Subtotal) to {end_merge_row-1} (Total-1) and row {end_merge_row} (Total)")
         except Exception as e:
             print(f"Merge error A-J: {e}")
     else:
