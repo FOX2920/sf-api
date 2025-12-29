@@ -4103,39 +4103,15 @@ async def generate_production_order_endpoint(contract_id: str):
     try:
         template_path = os.getenv('PO_TEMPLATE_PATH', 'templates/production_order_template.xlsx')
         if not os.path.exists(template_path):
-             raise HTTPException(status_code=404, detail=f"Production Order Template not found")
+             # Fallback
+             template_path = 'production_order_template.xlsx'
+             
+        # Call the UPDATED function directly
+        result = generate_production_order_file(contract_id, template_path)
+        return result
 
-        sf = get_salesforce_connection()
-        contract_data, products_data = get_production_order_data(sf, contract_id)
-        
-        if not contract_data:
-            raise HTTPException(status_code=404, detail=f"Contract not found: {contract_id}")
-
-        output_dir = get_output_directory()
-        safe_name = sanitize_filename(contract_data.get('Production_Order_Number__c', contract_data.get('Name')))
-        file_name = f"Production_Order_{safe_name}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        file_path = output_dir / file_name
-        
-        fill_production_order_template(template_path, str(file_path), contract_data, products_data)
-        
-        # Upload to Salesforce
-        with open(file_path, "rb") as f:
-            file_data = f.read()
-        encoded = base64.b64encode(file_data).decode("utf-8")
-        
-        content_version = sf.ContentVersion.create({
-            "Title": file_name.rsplit(".", 1)[0],
-            "PathOnClient": file_name,
-            "VersionData": encoded,
-            "FirstPublishLocationId": contract_id
-        })
-        
-        return {
-            "file_path": str(file_path),
-            "file_name": file_name,
-            "salesforce_content_version_id": content_version["id"]
-        }
     except Exception as e:
+        print(f"Error generating PO: {e}")
         raise HTTPException(status_code=500, detail=str(e))
         
 @app.get("/num-to-words")
