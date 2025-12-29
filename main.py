@@ -2110,7 +2110,7 @@ def generate_production_order_file(contract_id: str, template_path: str):
     contract_query = f"""
         SELECT Id, Production_Order_Number__c, Name, CreatedDate, Port_of_Origin__c, 
                Port_of_Discharge__c, Stockyard__c, Total_Pcs_PO__c, Total_Crates__c, 
-               Total_m2__c, Total_m3__c, Total_Tons__c, Total_Conts__c
+               Total_m2__c, Total_m3__c, Total_Tons__c, Total_Conts__c, Terms_of_Sale__c
         FROM Contract__c 
         WHERE Id = '{contract_id}'
     """
@@ -2322,10 +2322,37 @@ def generate_production_order_file(contract_id: str, template_path: str):
             ws.merge_cells(start_row=start_merge_row, start_column=15, end_row=last_row, end_column=15)
             ws.cell(row=start_merge_row, column=15).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
+        # Merge H-I-J (8-10) for "Ngọc Bích" in footer/signature
+        for r in range(table_start_row + len(products_data) + 1, ws.max_row + 1):
+            # Scan columns for signature name
+            found_signature = False
+            for c in range(1, 16):
+                val = ws.cell(row=r, column=c).value
+                if val and isinstance(val, str) and "Ngọc Bích" in val:
+                    found_signature = True
+                    break
+            
+            if found_signature:
+                # Merge H(8), I(9), J(10)
+                # First unmerge any existing merges in this range to be safe
+                for col in range(8, 11):
+                    cell = ws.cell(row=r, column=col)
+                    for merged_range in list(ws.merged_cells.ranges):
+                        if cell.coordinate in merged_range:
+                            try: ws.unmerge_cells(str(merged_range))
+                            except: pass
+
+                try:
+                    ws.merge_cells(start_row=r, start_column=8, end_row=r, end_column=10)
+                    ws.cell(row=r, column=8).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                except Exception as e:
+                    print(f"Error merging signature row {r}: {e}")
+                break
+
     now = datetime.datetime.now()
     timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
     safe_name = sanitize_filename(contract_data.get('Production_Order_Number__c', 'Draft'))
-    file_name = f"ProductionOrder_{safe_name}_{timestamp}.xlsx"
+    file_name = f"Production_Order_{safe_name}_{timestamp}.xlsx"
     output_dir = get_output_directory()
     file_path = output_dir / file_name
     wb.save(str(file_path))
