@@ -2264,8 +2264,9 @@ def generate_production_order_file(contract_id: str, template_path: str):
             packing_val = item.get("Packing__c")
             if packing_val:
                 try:
-                    ws.cell(row=row_idx, column=14).value = float(packing_val)
-                    ws.cell(row=row_idx, column=14).number_format = '0.0 "viên/kiện"'
+                    # Chuyển sang int
+                    ws.cell(row=row_idx, column=14).value = int(float(packing_val))
+                    ws.cell(row=row_idx, column=14).number_format = '0 "viên/kiện"'
                 except:
                     ws.cell(row=row_idx, column=14).value = f"{packing_val}\nviên/kiện"
             ws.cell(row=row_idx, column=14).alignment = align_center
@@ -2334,19 +2335,38 @@ def generate_production_order_file(contract_id: str, template_path: str):
             
             if found_signature:
                 # Merge H(8), I(9), J(10)
-                # First unmerge any existing merges in this range to be safe
+                # Feature: Move text and merge UP by 1 row (Lùi lên 1 ô)
+                # Current row is 'r'. We want to move to 'r - 1'.
+                target_r = r - 1
+                
+                # Move 'Ngọc Bích' text if needed (if it was found in column 8/H)
+                # Note: We scan c=1..16. If found in H (8), move it to H(target_r).
+                # If found elsewhere, logic might be complex, but usually it's in H.
+                
+                # Copy value and style from r to target_r for Col H
+                source_cell = ws.cell(row=r, column=8)
+                target_cell = ws.cell(row=target_r, column=8)
+                
+                # Only move if the source actually has the text (it implies we found it there or nearby)
+                # Since we found it in the row, let's assume it's in the standard place or just set it.
+                # To be safe: Set "Ngọc Bích" explicitly at target, clear source.
+                target_cell.value = "Ngọc Bích"
+                target_cell.font = source_cell.font # Preserve font if possible
+                source_cell.value = "" # Clear old
+
+                # First unmerge any existing merges in the TARGET range
                 for col in range(8, 11):
-                    cell = ws.cell(row=r, column=col)
+                    cell = ws.cell(row=target_r, column=col)
                     for merged_range in list(ws.merged_cells.ranges):
                         if cell.coordinate in merged_range:
                             try: ws.unmerge_cells(str(merged_range))
                             except: pass
 
                 try:
-                    ws.merge_cells(start_row=r, start_column=8, end_row=r, end_column=10)
-                    ws.cell(row=r, column=8).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                    ws.merge_cells(start_row=target_r, start_column=8, end_row=target_r, end_column=10)
+                    ws.cell(row=target_r, column=8).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
                 except Exception as e:
-                    print(f"Error merging signature row {r}: {e}")
+                    print(f"Error merging signature row {target_r}: {e}")
                 break
 
     now = datetime.datetime.now()
