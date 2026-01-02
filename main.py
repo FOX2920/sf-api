@@ -2188,9 +2188,75 @@ def generate_production_order_file(contract_id: str, template_path: str):
             
     if table_start_row and products_data:
         num_items = len(products_data)
-        if num_items > 1:
-            ws.insert_rows(table_start_row + 1, amount=num_items - 1)
+        rows_to_insert = num_items - 1
+        
+        if rows_to_insert > 0:
+            # FOOTER PRESERVATION: Capture footer content BEFORE inserting rows
+            # Footer starts after the TỔNG CỘNG row (table_start_row + 2 = LƯU Ý row in template)
+            # TỔNG CỘNG is at table_start_row + 1, we capture from row after it
+            footer_start_row_original = table_start_row + 2  # Skip TỔNG CỘNG, start at LƯU Ý
+            footer_data = []  # List of {row_offset, col, value, font, alignment, border, number_format}
+            footer_merges = []  # List of merge info relative to footer_start
             
+            # Capture all cell values and styles in footer (from LƯU Ý to end of sheet)
+            for r in range(footer_start_row_original, ws.max_row + 1):
+                for c in range(1, 16):
+                    cell = ws.cell(row=r, column=c)
+                    if cell.value is not None:  # Only capture cells with values
+                        footer_data.append({
+                            'row_offset': r - footer_start_row_original,
+                            'col': c,
+                            'value': cell.value,
+                            'font': style_copy(cell.font) if cell.font else None,
+                            'alignment': style_copy(cell.alignment) if cell.alignment else None,
+                            'border': style_copy(cell.border) if cell.border else None,
+                            'number_format': cell.number_format
+                        })
+            
+            # Capture merged ranges in footer zone
+            for merged_range in list(ws.merged_cells.ranges):
+                if merged_range.min_row >= footer_start_row_original:
+                    footer_merges.append({
+                        'min_row_offset': merged_range.min_row - footer_start_row_original,
+                        'max_row_offset': merged_range.max_row - footer_start_row_original,
+                        'min_col': merged_range.min_col,
+                        'max_col': merged_range.max_col
+                    })
+            
+            # Now insert rows
+            ws.insert_rows(table_start_row + 1, amount=rows_to_insert)
+            
+            # FOOTER RESTORATION: Restore captured footer content to new positions
+            # New footer start row = product rows + TỔNG CỘNG = table_start_row + num_items + 1
+            footer_start_row_new = table_start_row + num_items + 1
+            
+            # Restore cell values
+            for item in footer_data:
+                new_row = footer_start_row_new + item['row_offset']
+                cell = ws.cell(row=new_row, column=item['col'])
+                cell.value = item['value']
+                if item['font']: cell.font = item['font']
+                if item['alignment']: cell.alignment = item['alignment']
+                if item['border']: cell.border = item['border']
+                if item['number_format']: cell.number_format = item['number_format']
+            
+            # Restore merged ranges (first unmerge any existing, then re-merge)
+            for merge_info in footer_merges:
+                new_min_row = footer_start_row_new + merge_info['min_row_offset']
+                new_max_row = footer_start_row_new + merge_info['max_row_offset']
+                # Unmerge any existing ranges in this area first
+                for col in range(merge_info['min_col'], merge_info['max_col'] + 1):
+                    cell = ws.cell(row=new_min_row, column=col)
+                    for existing_merge in list(ws.merged_cells.ranges):
+                        if cell.coordinate in existing_merge:
+                            try: ws.unmerge_cells(str(existing_merge))
+                            except: pass
+                # Re-apply the merge
+                try:
+                    ws.merge_cells(start_row=new_min_row, start_column=merge_info['min_col'],
+                                   end_row=new_max_row, end_column=merge_info['max_col'])
+                except: pass
+
         thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
         align_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
         align_left = Alignment(horizontal='left', vertical='center', wrap_text=True)
@@ -2323,51 +2389,59 @@ def generate_production_order_file(contract_id: str, template_path: str):
             ws.merge_cells(start_row=start_merge_row, start_column=15, end_row=last_row, end_column=15)
             ws.cell(row=start_merge_row, column=15).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
-        # Merge H-I-J (8-10) for "Ngọc Bích" in footer/signature
-        for r in range(table_start_row + len(products_data) + 1, ws.max_row + 1):
-            # Scan columns for signature name
-            found_signature = False
-            for c in range(1, 16):
-                val = ws.cell(row=r, column=c).value
-                if val and isinstance(val, str) and "Ngọc Bích" in val:
-                    found_signature = True
+
+
+
+
+
+
+    # ----------------------------------------------------
+    # MERGE I, J, K FOR ROWS WITH "Người soạn lệnh" OR "Ngọc Bích"
+    # ----------------------------------------------------
+    for r in range(1, ws.max_row + 1):
+        found_keyword = False
+        row_values_ijk = []
+        target_val = None
+        
+        # Check entire row to find the keyword "Người soạn lệnh" or "Ngọc Bích"
+        for col in range(1, ws.max_column + 1):
+            cell = ws.cell(row=r, column=col)
+            if cell.value and isinstance(cell.value, str):
+                val_upper = str(cell.value).strip().upper()
+                if "NGƯỜI SOẠN LỆNH" in val_upper or "NGƯỜI SOAN LỆNH" in val_upper or "NGỌC BÍCH" in val_upper:
+                    found_keyword = True
+                    # If we found it, we break. But we need to know WHICH value to keep in IJK merge.
+                    # We will resume scanning IJK specifically below.
                     break
+        
+        if found_keyword:
+            # Check content in I(9), J(10), K(11) to preserve it
+            # We want to keep the value if it exists in one of these cells
+            val_9 = ws.cell(row=r, column=9).value
+            val_10 = ws.cell(row=r, column=10).value
+            val_11 = ws.cell(row=r, column=11).value
             
-            if found_signature:
-                # Merge H(8), I(9), J(10)
-                # Feature: Move text and merge UP by 1 row (Lùi lên 1 ô)
-                # Current row is 'r'. We want to move to 'r - 1'.
-                target_r = r - 1
+            # Prioritize the first non-empty value among them
+            final_val = val_9 if val_9 is not None else (val_10 if val_10 is not None else val_11)
+            
+            try:
+                # Unmerge if already merged (sanity check)
+                # Then set value to I(9) and clear J, K
+                ws.cell(row=r, column=9).value = final_val
+                ws.cell(row=r, column=10).value = None
+                ws.cell(row=r, column=11).value = None
                 
-                # Move 'Ngọc Bích' text if needed (if it was found in column 8/H)
-                # Note: We scan c=1..16. If found in H (8), move it to H(target_r).
-                # If found elsewhere, logic might be complex, but usually it's in H.
+                # Apply Styling
+                val_str = str(final_val).upper() if final_val else ""
+                if "NGƯỜI SOẠN LỆNH" in val_str or "NGƯỜI SOAN LỆNH" in val_str:
+                    ws.cell(row=r, column=9).font = Font(bold=True, underline='single', name='Times New Roman', size=11)
+                elif "NGỌC BÍCH" in val_str:
+                    ws.cell(row=r, column=9).font = Font(bold=True, name='Times New Roman', size=11)
                 
-                # Copy value and style from r to target_r for Col H
-                source_cell = ws.cell(row=r, column=8)
-                target_cell = ws.cell(row=target_r, column=8)
-                
-                # Only move if the source actually has the text (it implies we found it there or nearby)
-                # Since we found it in the row, let's assume it's in the standard place or just set it.
-                # To be safe: Set "Ngọc Bích" explicitly at target, clear source.
-                target_cell.value = "Ngọc Bích"
-                target_cell.font = source_cell.font # Preserve font if possible
-                source_cell.value = "" # Clear old
-
-                # First unmerge any existing merges in the TARGET range
-                for col in range(8, 11):
-                    cell = ws.cell(row=target_r, column=col)
-                    for merged_range in list(ws.merged_cells.ranges):
-                        if cell.coordinate in merged_range:
-                            try: ws.unmerge_cells(str(merged_range))
-                            except: pass
-
-                try:
-                    ws.merge_cells(start_row=target_r, start_column=8, end_row=target_r, end_column=10)
-                    ws.cell(row=target_r, column=8).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-                except Exception as e:
-                    print(f"Error merging signature row {target_r}: {e}")
-                break
+                ws.merge_cells(start_row=r, start_column=9, end_row=r, end_column=11)
+                ws.cell(row=r, column=9).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            except Exception as e:
+                print(f"Error merging IJK at row {r}: {e}")
 
     now = datetime.datetime.now()
     timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
@@ -4014,47 +4088,24 @@ def fill_production_order_template(template_path, output_path, contract_data, pr
             cell.border = thin_border
 
     # ----------------------------------------------------
-    # THÊM TÊN NGƯỜI SOẠN LỆNH & MERGE
+    # MERGE I, J, K FOR ROWS WITH "Người soạn lệnh" OR "Ngọc Bích"
     # ----------------------------------------------------
-    signer_row_idx = None
     for r in range(1, ws.max_row + 1):
-        # Check Column H
-        val_h = ws.cell(row=r, column=8).value 
-        if val_h:
-            val_str = str(val_h).upper()
-            if "NGƯỜI SOẠN LỆNH" in val_str or "NGƯỜI SOAN LỆNH" in val_str:
-                signer_row_idx = r
-                break
+        found_keyword = False
+        for cell in ws[r]:
+            if cell.value and isinstance(cell.value, str):
+                val_upper = str(cell.value).strip().upper()
+                if "NGƯỜI SOẠN LỆNH" in val_upper or "NGƯỜI SOAN LỆNH" in val_upper or "NGỌC BÍCH" in val_upper:
+                    found_keyword = True
+                    break
         
-        # Check Column I
-        val_i = ws.cell(row=r, column=9).value 
-        if val_i:
-            val_str = str(val_i).upper()
-            if "NGƯỜI SOẠN LỆNH" in val_str or "NGƯỜI SOAN LỆNH" in val_str:
-                signer_row_idx = r
-                break
-        
-        # Check Column J
-        val_j = ws.cell(row=r, column=10).value 
-        if val_j:
-            val_str = str(val_j).upper()
-            if "NGƯỜI SOẠN LỆNH" in val_str or "NGƯỜI SOAN LỆNH" in val_str:
-                signer_row_idx = r
-                break
-
-    if signer_row_idx:
-        # Write "Ngọc Bích" 2 rows below, in Column H (8) and merge H-J (8-10)
-        target_row = signer_row_idx + 2
-        
-        # Merge cells H, I, J using string range
-        merge_range = f"H{target_row}:J{target_row}"
-        ws.merge_cells(merge_range)
-        
-        # Write value to top-left cell (Column H / 8)
-        cell = ws.cell(row=target_row, column=8)
-        cell.value = "Ngọc Bích"
-        cell.font = Font(name='Times New Roman', size=11)
-        cell.alignment = Alignment(horizontal='center', vertical='center')
+        if found_keyword:
+            # Merge columns I (9), J (10), K (11)
+            try:
+                ws.merge_cells(start_row=r, start_column=9, end_row=r, end_column=11)
+                ws.cell(row=r, column=9).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            except Exception as e:
+                print(f"Error merging IJK at row {r}: {e}")
 
     # ----------------------------------------------------
     # KHẮC PHỤC LỖI MERGE CELL (Giữ nguyên logic merge)
