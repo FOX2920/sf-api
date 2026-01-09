@@ -3029,17 +3029,20 @@ def generate_pi_no_discount_logic(contract_id, template_path):
         
     # --- Calculate Totals Locally ---
     total_crates = 0.0
+    total_m2 = 0.0
     total_m3 = 0.0
     total_tons = 0.0
     total_conts = 0.0
     
     for item in contract_items:
         total_crates += safe_float(item.get('Crates__c'))
+        total_m2 += safe_float(item.get('m2__c'))
         total_m3 += safe_float(item.get('m3__c'))
         total_tons += safe_float(item.get('Tons__c'))
         total_conts += safe_float(item.get('Cont__c'))
         
     full_data['Contract__c.Total_Crates__c'] = total_crates
+    full_data['Contract__c.Total_m2__c'] = total_m2
     full_data['Contract__c.Total_m3__c'] = total_m3
     full_data['Contract__c.Total_Tons__c'] = total_tons
     full_data['Contract__c.Total_Conts__c'] = total_conts
@@ -3153,6 +3156,7 @@ def generate_pi_no_discount_logic(contract_id, template_path):
 
                 float_fields = [
                     "{{Contract__c.Total_Crates__c}}",
+                    "{{Contract__c.Total_m2__c}}",
                     "{{Contract__c.Total_m3__c}}",
                     "{{Contract__c.Total_Tons__c}}",
                     "{{Contract__c.Total_Conts__c}}",
@@ -3275,6 +3279,22 @@ def generate_pi_no_discount_logic(contract_id, template_path):
 
     expand_table_pi(ws, "{{TableStart:PISurcharge}}", "{{TableEnd:PISurcharge}}", surcharge_items)
 
+    # Fill Deposit Table (Single row from Contract)
+    deposit_items = []
+    if contract_data:
+        total_amount = safe_float(contract_data.get('Total_Price_USD__c'))
+        deposit_amount = safe_float(contract_data.get('Deposit__c'))
+        balance = total_amount - deposit_amount
+        
+        deposit_items.append({
+            "Deposit__c": contract_data.get('Deposit__c'),
+            "Deposit_Percentage__c": contract_data.get('Deposit_Percentage__c'),
+            "Total_Price_USD__c": contract_data.get('Total_Price_USD__c'),
+            "Balance__c": balance 
+        })
+        
+    expand_table_pi(ws, "{{TableStart:PIDeposit}}", "{{TableEnd:PIDeposit}}", deposit_items)
+
     for row in ws.iter_rows():
         for cell in row:
             if cell.value and isinstance(cell.value, str) and "All prices quoted herein" in cell.value:
@@ -3309,12 +3329,37 @@ def generate_pi_no_discount_logic(contract_id, template_path):
 @app.get("/generate-pi-no-discount/{contract_id}")
 async def generate_pi_no_discount_endpoint(contract_id: str):
     try:
-        template_path = os.getenv('PI_TEMPLATE_PATH', 'templates/proforma_invoice_template_new.xlsx')
+        # Check if contract has discount first
+        sf = get_salesforce_connection()
+        query = f"SELECT Discount__c, Discount_Amount__c FROM Contract__c WHERE Id = '{contract_id}'"
+        res = sf.query(query)
+        has_discount = False
+        if res['totalSize'] > 0:
+            rec = res['records'][0]
+            d_percent = rec.get('Discount__c')
+            d_amount = rec.get('Discount_Amount__c')
+            if (d_percent and float(d_percent) != 0) or (d_amount and float(d_amount) != 0):
+                has_discount = True
+        
+        if has_discount:
+            template_path = os.getenv('PI_TEMPLATE_PATH', 'templates/proforma_invoice_template_new.xlsx')
+        else:
+             template_path = 'templates/proforma_invoice_template_no_discount.xlsx'
+
         if not os.path.exists(template_path):
              # Fallback
-             template_path = 'templates/proforma_invoice_template_no_discount.xlsx'
+             if has_discount:
+                 template_path = 'templates/proforma_invoice_template_new.xlsx'
+             else:
+                 template_path = 'templates/proforma_invoice_template_no_discount.xlsx'
+             
              if not os.path.exists(template_path):
-                 raise HTTPException(status_code=404, detail=f"PI Template not found")
+                 # Ultimate fallback
+                 fallback = 'templates/proforma_invoice_template_new.xlsx'
+                 if os.path.exists(fallback):
+                     template_path = fallback
+                 else:
+                     raise HTTPException(status_code=404, detail=f"PI Template not found: {template_path}")
 
         result = generate_pi_no_discount_logic(contract_id, template_path)
         return result
