@@ -2194,8 +2194,43 @@ def generate_production_order_file(contract_id: str, template_path: str):
     try:
         products_res = sf.query(products_query)
         products_data = products_res['records']
+        
+        # FALLBACK: If no Order Products found, query Contract Product items instead
+        if not products_data:
+            print(f"No Order Products found for {contract_id}, falling back to Contract Products...")
+            cp_query = f"""
+                SELECT Id, Name, Quantity__c, Crates__c, m2__c, m3__c, Tons__c, Cont__c, 
+                       Length__c, Width__c, Height__c, Packing__c, Delivery_Date__c,
+                       Product__r.Name, Product__r.ProductCode, Product__r.Product_description_in_Vietnamese__c,
+                       Contract__r.Name
+                FROM Contract_Product__c 
+                WHERE Contract__r.Id = '{contract_id}'
+                ORDER BY Line_Number__c ASC
+            """
+            cp_res = sf.query(cp_query)
+            if cp_res['records']:
+                for item in cp_res['records']:
+                    # Normalize fields to match template expectations
+                    norm_item = {
+                        "Order__r": {"Name": item.get("Contract__r", {}).get("Name", "")},
+                        "SKU__c": item.get("Product__r", {}).get("ProductCode"),
+                        "Vietnamese_Description__c": item.get("Product__r", {}).get("Product_description_in_Vietnamese__c"),
+                        "Length__c": item.get("Length__c"),
+                        "Width__c": item.get("Width__c"),
+                        "Height__c": item.get("Height__c"),
+                        "Quantity__c": item.get("Quantity__c"),
+                        "Crates__c": item.get("Crates__c"),
+                        "m2__c": item.get("m2__c"),
+                        "m3__c": item.get("m3__c"),
+                        "Tons__c": item.get("Tons__c"),
+                        "Cont__c": item.get("Cont__c"),
+                        "Packing__c": item.get("Packing__c"),
+                        "Delivery_Date__c": item.get("Delivery_Date__c")
+                    }
+                    products_data.append(norm_item)
+                    
     except Exception as e:
-        print(f"Error querying Order Products: {e}")
+        print(f"Error querying items: {e}")
         products_data = []
 
     wb = openpyxl.load_workbook(template_path)
@@ -2213,10 +2248,43 @@ def generate_production_order_file(contract_id: str, template_path: str):
                 except: pass
 
     # Fill placeholders
+    total_fields = [
+        "Contract__c.Total_Pcs_PO__c",
+        "Contract__c.Total_Crates__c",
+        "Contract__c.Total_m2__c",
+        "Contract__c.Total_m3__c",
+        "Contract__c.Total_Tons__c",
+        "Contract__c.Total_Conts__c"
+    ]
+
     for row in ws.iter_rows():
         for cell in row:
             if cell.value and isinstance(cell.value, str):
                 val = cell.value
+                
+                # Check for smart formatting fields first (exact match of {{Placeholder}})
+                is_numeric_total = False
+                for field in total_fields:
+                    placeholder = f"{{{{{field}}}}}"
+                    placeholder_with_fmt = f"{{{{{field}\\#0}}}}" # Handle existing template format if any
+                    
+                    if val.strip() == placeholder or val.strip() == placeholder_with_fmt:
+                        raw_val = flat_data.get(field)
+                        if raw_val is not None:
+                            try:
+                                num_val = float(raw_val)
+                                cell.value = num_val
+                                if num_val.is_integer():
+                                    cell.number_format = '#,##0'
+                                else:
+                                    cell.number_format = '#,##0.00'
+                                is_numeric_total = True
+                                break
+                            except: pass
+                
+                if is_numeric_total:
+                    continue
+
                 matches = re.findall(r"\{\{([^\}]+)\}\}", val)
                 for match in matches:
                     key_part = match.split('\\')[0].strip()
@@ -2228,13 +2296,13 @@ def generate_production_order_file(contract_id: str, template_path: str):
                         
                         if format_part and replace_val:
                             try:
-                                val_str = str(replace_val).split('T')[0]
-                                if 'T' in str(replace_val):
-                                     dt = datetime.datetime.strptime(str(replace_val).split('+')[0].split('.')[0], "%Y-%m-%dT%H:%M:%S")
-                                else:
-                                     dt = datetime.datetime.strptime(val_str, "%Y-%m-%d")
-                                py_format = format_part.replace('dd', '%d').replace('MM', '%m').replace('yyyy', '%Y')
-                                replace_val = dt.strftime(py_format)
+                                 val_str = str(replace_val).split('T')[0]
+                                 if 'T' in str(replace_val):
+                                      dt = datetime.datetime.strptime(str(replace_val).split('+')[0].split('.')[0], "%Y-%m-%dT%H:%M:%S")
+                                 else:
+                                      dt = datetime.datetime.strptime(val_str, "%Y-%m-%d")
+                                 py_format = format_part.replace('dd', '%d').replace('MM', '%m').replace('yyyy', '%Y')
+                                 replace_val = dt.strftime(py_format)
                             except: pass
                         
                         val = val.replace(f"{{{{{match}}}}}", str(replace_val))
@@ -2249,208 +2317,213 @@ def generate_production_order_file(contract_id: str, template_path: str):
             table_start_row = r
             break
             
-    if table_start_row and products_data:
-        num_items = len(products_data)
-        rows_to_insert = num_items - 1
-        
-        if rows_to_insert > 0:
-            # FOOTER PRESERVATION: Capture footer content BEFORE inserting rows
-            # Footer starts after the TỔNG CỘNG row (table_start_row + 2 = LƯU Ý row in template)
-            # TỔNG CỘNG is at table_start_row + 1, we capture from row after it
-            footer_start_row_original = table_start_row + 2  # Skip TỔNG CỘNG, start at LƯU Ý
-            footer_data = []  # List of {row_offset, col, value, font, alignment, border, number_format}
-            footer_merges = []  # List of merge info relative to footer_start
+    if table_start_row:
+        if products_data:
+            num_items = len(products_data)
+            rows_to_insert = num_items - 1
             
-            # Capture all cell values and styles in footer (from LƯU Ý to end of sheet)
-            for r in range(footer_start_row_original, ws.max_row + 1):
-                for c in range(1, 16):
-                    cell = ws.cell(row=r, column=c)
-                    if cell.value is not None:  # Only capture cells with values
-                        footer_data.append({
-                            'row_offset': r - footer_start_row_original,
-                            'col': c,
-                            'value': cell.value,
-                            'font': style_copy(cell.font) if cell.font else None,
-                            'alignment': style_copy(cell.alignment) if cell.alignment else None,
-                            'border': style_copy(cell.border) if cell.border else None,
-                            'number_format': cell.number_format
-                        })
-            
-            # Capture merged ranges in footer zone
-            for merged_range in list(ws.merged_cells.ranges):
-                if merged_range.min_row >= footer_start_row_original:
-                    footer_merges.append({
-                        'min_row_offset': merged_range.min_row - footer_start_row_original,
-                        'max_row_offset': merged_range.max_row - footer_start_row_original,
-                        'min_col': merged_range.min_col,
-                        'max_col': merged_range.max_col
-                    })
-            
-            # Now insert rows
-            ws.insert_rows(table_start_row + 1, amount=rows_to_insert)
-            
-            # FOOTER RESTORATION: Restore captured footer content to new positions
-            # New footer start row = product rows + TỔNG CỘNG = table_start_row + num_items + 1
-            footer_start_row_new = table_start_row + num_items + 1
-            
-            # Restore cell values
-            for item in footer_data:
-                new_row = footer_start_row_new + item['row_offset']
-                cell = ws.cell(row=new_row, column=item['col'])
-                cell.value = item['value']
-                if item['font']: cell.font = item['font']
-                if item['alignment']: cell.alignment = item['alignment']
-                if item['border']: cell.border = item['border']
-                if item['number_format']: cell.number_format = item['number_format']
-            
-            # Restore merged ranges (first unmerge any existing, then re-merge)
-            for merge_info in footer_merges:
-                new_min_row = footer_start_row_new + merge_info['min_row_offset']
-                new_max_row = footer_start_row_new + merge_info['max_row_offset']
-                # Unmerge any existing ranges in this area first
-                for col in range(merge_info['min_col'], merge_info['max_col'] + 1):
-                    cell = ws.cell(row=new_min_row, column=col)
-                    for existing_merge in list(ws.merged_cells.ranges):
-                        if cell.coordinate in existing_merge:
-                            try: ws.unmerge_cells(str(existing_merge))
-                            except: pass
-                # Re-apply the merge
-                try:
-                    ws.merge_cells(start_row=new_min_row, start_column=merge_info['min_col'],
-                                   end_row=new_max_row, end_column=merge_info['max_col'])
-                except: pass
-
-        thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
-        align_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
-        align_left = Alignment(horizontal='left', vertical='center', wrap_text=True)
-        
-        # Copy styles
-        if num_items > 1:
-            for i in range(1, num_items):
-                for col in range(1, 16):
-                    source_cell = ws.cell(row=table_start_row, column=col)
-                    target_cell = ws.cell(row=table_start_row + i, column=col)
-                    if source_cell.border: target_cell.border = style_copy(source_cell.border)
-                    if source_cell.font: target_cell.font = style_copy(source_cell.font)
-                    if source_cell.alignment: target_cell.alignment = style_copy(source_cell.alignment)
-                    if source_cell.number_format: target_cell.number_format = style_copy(source_cell.number_format)
-
-        ws.cell(row=table_start_row, column=1).value = ""
-        
-        for i, item in enumerate(products_data):
-            row_idx = table_start_row + i
-            
-            # Unmerge
-            for col in range(1, 16):
-                cell = ws.cell(row=row_idx, column=col)
-                for merged_range in list(ws.merged_cells.ranges):
-                    if cell.coordinate in merged_range:
-                        try: ws.unmerge_cells(str(merged_range))
-                        except: pass
-                ws.cell(row=row_idx, column=col).border = thin_border
-
-            # Map Data
-            ws.cell(row=row_idx, column=1).value = i + 1
-            ws.cell(row=row_idx, column=1).alignment = align_center
-            ws.cell(row=row_idx, column=2).value = item.get("Order__r", {}).get("Name") if item.get("Order__r") else ""
-            ws.cell(row=row_idx, column=2).alignment = align_center
-            ws.cell(row=row_idx, column=3).value = item.get("SKU__c")
-            ws.cell(row=row_idx, column=3).alignment = align_left
-            
-            # Rich Text Description
-            desc_val = item.get("Vietnamese_Description__c") or ""
-            if desc_val and '-' in str(desc_val):
-                parts = str(desc_val).split('-', 1)
-                rich_text = CellRichText(
-                    TextBlock(InlineFont(b=True, rFont='Times New Roman', sz=11), parts[0]),
-                    TextBlock(InlineFont(b=False, rFont='Times New Roman', sz=11), '-' + parts[1])
-                )
-                ws.cell(row=row_idx, column=4).value = rich_text
-            else:
-                ws.cell(row=row_idx, column=4).value = desc_val
-            ws.cell(row=row_idx, column=4).alignment = align_left
-            
-            # Dimensions & Quantity
-            ws.cell(row=row_idx, column=5).value = item.get("Length__c")
-            ws.cell(row=row_idx, column=6).value = item.get("Width__c")
-            ws.cell(row=row_idx, column=7).value = item.get("Height__c")
-            ws.cell(row=row_idx, column=8).value = item.get("Quantity__c")
-            ws.cell(row=row_idx, column=9).value = item.get("Crates__c")
-            
-            if item.get("m2__c"): 
-                ws.cell(row=row_idx, column=10).value = float(item.get("m2__c"))
-                ws.cell(row=row_idx, column=10).number_format = '0.00'
-            if item.get("m3__c"):
-                ws.cell(row=row_idx, column=11).value = float(item.get("m3__c"))
-                ws.cell(row=row_idx, column=11).number_format = '0.00'
+            if rows_to_insert > 0:
+                # FOOTER PRESERVATION: Capture footer content BEFORE inserting rows
+                # Footer starts after the TỔNG CỘNG row (table_start_row + 2 = LƯU Ý row in template)
+                # TỔNG CỘNG is at table_start_row + 1, we capture from row after it
+                footer_start_row_original = table_start_row + 2  # Skip TỔNG CỘNG, start at LƯU Ý
+                footer_data = []  # List of {row_offset, col, value, font, alignment, border, number_format}
+                footer_merges = []  # List of merge info relative to footer_start
                 
-            ws.cell(row=row_idx, column=12).value = item.get("Tons__c")
-            ws.cell(row=row_idx, column=13).value = item.get("Cont__c")
-            
-            for col in range(5, 14): ws.cell(row=row_idx, column=col).alignment = align_center
-            
-            # Packing
-            packing_val = item.get("Packing__c")
-            if packing_val:
-                try:
-                    # Chuyển sang int
-                    ws.cell(row=row_idx, column=14).value = int(float(packing_val))
-                    ws.cell(row=row_idx, column=14).number_format = '0 "viên/kiện"'
-                except:
-                    ws.cell(row=row_idx, column=14).value = f"{packing_val}\nviên/kiện"
-            ws.cell(row=row_idx, column=14).alignment = align_center
-            
-            # Delivery Date
-            del_date = item.get("Delivery_Date__c")
-            # Fallback to Order's Delivery Date if None
-            if not del_date:
-                del_date = item.get("Order__r", {}).get("Delivery_Date__c")
+                # Capture all cell values and styles in footer (from LƯU Ý to end of sheet)
+                for r in range(footer_start_row_original, ws.max_row + 1):
+                    for c in range(1, 16):
+                        cell = ws.cell(row=r, column=c)
+                        if cell.value is not None:  # Only capture cells with values
+                            footer_data.append({
+                                'row_offset': r - footer_start_row_original,
+                                'col': c,
+                                'value': cell.value,
+                                'font': style_copy(cell.font) if cell.font else None,
+                                'alignment': style_copy(cell.alignment) if cell.alignment else None,
+                                'border': style_copy(cell.border) if cell.border else None,
+                                'number_format': cell.number_format
+                            })
+                
+                # Capture merged ranges in footer zone
+                for merged_range in list(ws.merged_cells.ranges):
+                    if merged_range.min_row >= footer_start_row_original:
+                        footer_merges.append({
+                            'min_row_offset': merged_range.min_row - footer_start_row_original,
+                            'max_row_offset': merged_range.max_row - footer_start_row_original,
+                            'min_col': merged_range.min_col,
+                            'max_col': merged_range.max_col
+                        })
+                
+                # Now insert rows
+                ws.insert_rows(table_start_row + 1, amount=rows_to_insert)
+                
+                # FOOTER RESTORATION: Restore captured footer content to new positions
+                # New footer start row = product rows + TỔNG CỘNG = table_start_row + num_items + 1
+                footer_start_row_new = table_start_row + num_items + 1
+                
+                # Restore cell values
+                for item in footer_data:
+                    new_row = footer_start_row_new + item['row_offset']
+                    cell = ws.cell(row=new_row, column=item['col'])
+                    cell.value = item['value']
+                    if item['font']: cell.font = item['font']
+                    if item['alignment']: cell.alignment = item['alignment']
+                    if item['border']: cell.border = item['border']
+                    if item['number_format']: cell.number_format = item['number_format']
+                
+                # Restore merged ranges (first unmerge any existing, then re-merge)
+                for merge_info in footer_merges:
+                    new_min_row = footer_start_row_new + merge_info['min_row_offset']
+                    new_max_row = footer_start_row_new + merge_info['max_row_offset']
+                    # Unmerge any existing ranges in this area first
+                    for col in range(merge_info['min_col'], merge_info['max_col'] + 1):
+                        cell = ws.cell(row=new_min_row, column=col)
+                        for existing_merge in list(ws.merged_cells.ranges):
+                            if cell.coordinate in existing_merge:
+                                try: ws.unmerge_cells(str(existing_merge))
+                                except: pass
+                    # Re-apply the merge
+                    try:
+                        ws.merge_cells(start_row=new_min_row, start_column=merge_info['min_col'],
+                                       end_row=new_max_row, end_column=merge_info['max_col'])
+                    except: pass
 
-            if del_date:
-                try:
-                    dt = datetime.datetime.strptime(del_date[:10], "%Y-%m-%d")
-                    ws.cell(row=row_idx, column=15).value = dt.strftime("%d/%m/%Y")
-                except:
-                    ws.cell(row=row_idx, column=15).value = del_date
-            ws.cell(row=row_idx, column=15).alignment = align_center
+            thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+            align_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            align_left = Alignment(horizontal='left', vertical='center', wrap_text=True)
+            
+            # Copy styles
+            if num_items > 1:
+                for i in range(1, num_items):
+                    for col in range(1, 16):
+                        source_cell = ws.cell(row=table_start_row, column=col)
+                        target_cell = ws.cell(row=table_start_row + i, column=col)
+                        if source_cell.border: target_cell.border = style_copy(source_cell.border)
+                        if source_cell.font: target_cell.font = style_copy(source_cell.font)
+                        if source_cell.alignment: target_cell.alignment = style_copy(source_cell.alignment)
+                        if source_cell.number_format: target_cell.number_format = style_copy(source_cell.number_format)
 
-        # Merge duplicate "TÊN HÀNG" (Column D / 4) - Sync with Delivery Date Logic
-        start_merge_row = table_start_row
-        current_val = ws.cell(row=start_merge_row, column=4).value
-        for i in range(1, len(products_data)):
-            row_idx = table_start_row + i
-            val = ws.cell(row=row_idx, column=4).value
-            if val != current_val:
-                if row_idx - 1 > start_merge_row:
-                    ws.merge_cells(start_row=start_merge_row, start_column=4, end_row=row_idx-1, end_column=4)
-                    ws.cell(row=start_merge_row, column=4).alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
-                start_merge_row = row_idx
-                current_val = val
-        last_row = table_start_row + len(products_data) - 1
-        if last_row > start_merge_row:
-            ws.merge_cells(start_row=start_merge_row, start_column=4, end_row=last_row, end_column=4)
-            ws.cell(row=start_merge_row, column=4).alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
-        
-        # Merge duplicate "THỜI GIAN GIAO HÀNG" (Column O / 15)
-        # Note: merge_identical_cells helper uses left alignment, but date needs center.
-        # We might need to manually adjust alignment after merging or update helper.
-        # For now, let's use the helper and override alignment if needed, or just replicate logic.
-        # Replicating logic for Col 15 to ensure Center alignment
-        start_merge_row = table_start_row
-        current_val = ws.cell(row=start_merge_row, column=15).value
-        for i in range(1, len(products_data)):
-            row_idx = table_start_row + i
-            val = ws.cell(row=row_idx, column=15).value
-            if val != current_val:
-                if row_idx - 1 > start_merge_row:
-                    ws.merge_cells(start_row=start_merge_row, start_column=15, end_row=row_idx-1, end_column=15)
-                    ws.cell(row=start_merge_row, column=15).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-                start_merge_row = row_idx
-                current_val = val
-        last_row = table_start_row + len(products_data) - 1
-        if last_row > start_merge_row:
-            ws.merge_cells(start_row=start_merge_row, start_column=15, end_row=last_row, end_column=15)
-            ws.cell(row=start_merge_row, column=15).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            ws.cell(row=table_start_row, column=1).value = ""
+            
+            for i, item in enumerate(products_data):
+                row_idx = table_start_row + i
+                
+                # Unmerge
+                for col in range(1, 16):
+                    cell = ws.cell(row=row_idx, column=col)
+                    for merged_range in list(ws.merged_cells.ranges):
+                        if cell.coordinate in merged_range:
+                            try: ws.unmerge_cells(str(merged_range))
+                            except: pass
+                    ws.cell(row=row_idx, column=col).border = thin_border
+
+                # Map Data
+                ws.cell(row=row_idx, column=1).value = i + 1
+                ws.cell(row=row_idx, column=1).alignment = align_center
+                ws.cell(row=row_idx, column=2).value = item.get("Order__r", {}).get("Name") if item.get("Order__r") else ""
+                ws.cell(row=row_idx, column=2).alignment = align_center
+                ws.cell(row=row_idx, column=3).value = item.get("SKU__c")
+                ws.cell(row=row_idx, column=3).alignment = align_left
+                
+                # Rich Text Description
+                desc_val = item.get("Vietnamese_Description__c") or ""
+                if desc_val and '-' in str(desc_val):
+                    parts = str(desc_val).split('-', 1)
+                    rich_text = CellRichText(
+                        TextBlock(InlineFont(b=True, rFont='Times New Roman', sz=11), parts[0]),
+                        TextBlock(InlineFont(b=False, rFont='Times New Roman', sz=11), '-' + parts[1])
+                    )
+                    ws.cell(row=row_idx, column=4).value = rich_text
+                else:
+                    ws.cell(row=row_idx, column=4).value = desc_val
+                ws.cell(row=row_idx, column=4).alignment = align_left
+                
+                # Dimensions & Quantity
+                ws.cell(row=row_idx, column=5).value = item.get("Length__c")
+                ws.cell(row=row_idx, column=6).value = item.get("Width__c")
+                ws.cell(row=row_idx, column=7).value = item.get("Height__c")
+                ws.cell(row=row_idx, column=8).value = item.get("Quantity__c")
+                ws.cell(row=row_idx, column=9).value = item.get("Crates__c")
+                
+                if item.get("m2__c"): 
+                    ws.cell(row=row_idx, column=10).value = float(item.get("m2__c"))
+                    ws.cell(row=row_idx, column=10).number_format = '0.00'
+                if item.get("m3__c"):
+                    ws.cell(row=row_idx, column=11).value = float(item.get("m3__c"))
+                    ws.cell(row=row_idx, column=11).number_format = '0.00'
+                    
+                ws.cell(row=row_idx, column=12).value = item.get("Tons__c")
+                ws.cell(row=row_idx, column=13).value = item.get("Cont__c")
+                
+                for col in range(5, 14): ws.cell(row=row_idx, column=col).alignment = align_center
+                
+                # Packing
+                packing_val = item.get("Packing__c")
+                if packing_val:
+                    try:
+                        # Chuyển sang int
+                        ws.cell(row=row_idx, column=14).value = int(float(packing_val))
+                        ws.cell(row=row_idx, column=14).number_format = '0 "viên/kiện"'
+                    except:
+                        ws.cell(row=row_idx, column=14).value = f"{packing_val}\nviên/kiện"
+                ws.cell(row=row_idx, column=14).alignment = align_center
+                
+                # Delivery Date
+                del_date = item.get("Delivery_Date__c")
+                # Fallback to Order's Delivery Date if None
+                if not del_date:
+                    del_date = item.get("Order__r", {}).get("Delivery_Date__c")
+
+                if del_date:
+                    try:
+                        dt = datetime.datetime.strptime(del_date[:10], "%Y-%m-%d")
+                        ws.cell(row=row_idx, column=15).value = dt.strftime("%d/%m/%Y")
+                    except:
+                        ws.cell(row=row_idx, column=15).value = del_date
+                ws.cell(row=row_idx, column=15).alignment = align_center
+
+            # Merge duplicate "TÊN HÀNG" (Column D / 4) - Sync with Delivery Date Logic
+            start_merge_row = table_start_row
+            current_val = ws.cell(row=start_merge_row, column=4).value
+            for i in range(1, len(products_data)):
+                row_idx = table_start_row + i
+                val = ws.cell(row=row_idx, column=4).value
+                if val != current_val:
+                    if row_idx - 1 > start_merge_row:
+                        ws.merge_cells(start_row=start_merge_row, start_column=4, end_row=row_idx-1, end_column=4)
+                        ws.cell(row=start_merge_row, column=4).alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+                    start_merge_row = row_idx
+                    current_val = val
+            last_row = table_start_row + len(products_data) - 1
+            if last_row > start_merge_row:
+                ws.merge_cells(start_row=start_merge_row, start_column=4, end_row=last_row, end_column=4)
+                ws.cell(row=start_merge_row, column=4).alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+            
+            # Merge duplicate "THỜI GIAN GIAO HÀNG" (Column O / 15)
+            start_merge_row = table_start_row
+            current_val = ws.cell(row=start_merge_row, column=15).value
+            for i in range(1, len(products_data)):
+                row_idx = table_start_row + i
+                val = ws.cell(row=row_idx, column=15).value
+                if val != current_val:
+                    if row_idx - 1 > start_merge_row:
+                        ws.merge_cells(start_row=start_merge_row, start_column=15, end_row=row_idx-1, end_column=15)
+                        ws.cell(row=start_merge_row, column=15).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                    start_merge_row = row_idx
+                    current_val = val
+            last_row = table_start_row + len(products_data) - 1
+            if last_row > start_merge_row:
+                ws.merge_cells(start_row=start_merge_row, start_column=15, end_row=last_row, end_column=15)
+                ws.cell(row=start_merge_row, column=15).alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        else:
+            # CLEANUP: If no products_data, clear placeholders and tags from the template row
+            for col in range(1, 16):
+                cell = ws.cell(row=table_start_row, column=col)
+                if cell.value and isinstance(cell.value, str):
+                    val = cell.value.replace("{{TableStart:ProPlanProduct}}", "").replace("{{TableEnd:ProPlanProduct}}", "")
+                    val = re.sub(r"\{\{.*?\}\}", "", val)
+                    cell.value = val.strip() if val.strip() else None
 
 
 
