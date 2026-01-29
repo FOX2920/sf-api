@@ -1680,7 +1680,7 @@ def generate_pi_no_discount_file(contract_id: str, template_path: str):
     
     # Query Contract (Full Query from reference script)
     contract_query = f"""
-    SELECT Id, IsDeleted, Name, CreatedDate, LastModifiedDate, SystemModstamp, LastActivityDate, LastViewedDate, LastReferencedDate, Cont__c, Container_Weight_Regulations__c, Crates__c, Height__c, Length__c, Line_Number__c, Packing__c, Sales_Price__c, Tons__c, Width__c, List_Price__c, Discount__c, Charge_Unit__c, Quantity__c, m2__c, m3__c, ml__c, Total_Price_USD__c, L_PI__c, W_PI__c, H_PI__c, PCS_PI__c, Crates_PI__c, Created_Date__c, Packing_PI__c, Product_Discription__c, Charge_Unit_PI__c, Actual_Cont__c, Pending_Cont__c, Clear__c, Actual_Crates__c, Actual_m2__c, Actual_m3__c, Actual_ml__c, Actual_Quantity__c, Actual_Tons__c, Actual_Total_Price_USD__c, Pending_Crates__c, Pending_m2__c, Pending_m3__c, Pending_ml__c, Pending_Quantity__c, Pending_Tons__c, Pending_Amount_USD__c, Delivery_Date__c, Delivery_Quantity__c, Is_Delivery_Quantity_Valid__c, Delivery_Quantity_number__c, Unscheduled_Quantity__c, Line_number_For_print__c, Product__r.Id, Product__r.Name, Product__r.ProductCode, Product__r.Description, Product__r.QuantityScheduleType, Product__r.QuantityInstallmentPeriod, Product__r.NumberOfQuantityInstallments, Product__r.RevenueScheduleType, Product__r.RevenueInstallmentPeriod, Product__r.NumberOfRevenueInstallments, Product__r.IsActive, Product__r.CreatedDate, Product__r.CreatedById, Product__r.LastModifiedDate, Product__r.LastModifiedById, Product__r.SystemModstamp, Product__r.Family, Product__r.ExternalDataSourceId, Product__r.ExternalId, Product__r.DisplayUrl, Product__r.QuantityUnitOfMeasure, Product__r.IsDeleted, Product__r.IsArchived, Product__r.LastViewedDate, Product__r.LastReferencedDate, Product__r.StockKeepingUnit, Product__r.Product_description_in_Vietnamese__c, Product__r.specific_gravity__c, Product__r.Bottom_cladding_coefficient__c, Product__r.STONE_Color_Type__c, Product__r.Packing__c, Product__r.Long__c, Product__r.High__c, Product__r.Width__c, Product__r.Long_special__c, Product__r.High_special__c, Product__r.Image__c, Product__r.Charge_Unit__c, Product__r.Width_special__c, Product__r.STONE_Class__c, Product__r.Description__c, Product__r.List_Price__c, Product__r.Weight_per_unit__c, Product__r.Edge_Finish__c, Product__r.Suppliers__c, Product__r.m_per_unit__c, Product__r.Application__c, Product__r.Surface_Finish__c, Product__r.m3_per_unit__c, Product__r.Pricing_Method__c, Contract__r.Id, Contract__r.OwnerId, Contract__r.IsDeleted, Contract__r.Name, Contract__r.CreatedDate, Contract__r.CreatedById, Contract__r.LastModifiedDate, Contract__r.LastModifiedById, Contract__r.SystemModstamp, Contract__r.LastActivityDate, Contract__r.LastViewedDate, Contract__r.LastReferencedDate, Contract__r.Account__c, Contract__r.Quote__c, Contract__r.Bill_To__c, Contract__r.Bill_To_Name__c, Contract__r.Contact_Name__c, Contract__r.Expiration_Date__c, Contract__r.Export_Route_Carrier__c, Contract__r.Fax__c, Contract__r.Phone__c, Contract__r.Fumigation__c, Contract__r.Incoterms__c, Contract__r.In_words__c, Contract__r.Packing__c, Contract__r.Port_of_Discharge__c, Contract__r.REMARK_NUMBER_ON_DOCUMENTS__c, Contract__r.Shipping_Schedule__c, Contract__r.Total_Conts__c, Contract__r.Total_Crates__c, Contract__r.Total_m3__c, Contract__r.Sub_Total_USD__c, Contract__r.Total_Tons__c, Contract__r.Deposit_Percentage__c, Contract__r.Discount__c, Contract__r.Total_Price_USD__c, Contract__r.Deposit__c, Contract__r.Stage__c, Contract__r.Total_Payment_Received__c, Contract__r.Expected_ETD__c, Contract__r.Port_of_Origin__c, Contract__r.Price_Book__c, Contract__r.Stockyard__c, Contract__r.Created_Date__c, Contract__r.Total_Contract_Product__c, Contract__r.Pending_Products__c, Contract__r.Total_Payment_Received_USD__c, Contract__r.Production_Order_Number__c, Contract__r.Total_m2__c, Contract__r.Total_Pcs__c, Contract__r.Total_Pcs_PO__c, Contract__r.Planned_Shipments__c, Contract__r.Is_approved__c, Contract__r.Deposited_amount_USD__c, Contract__r.Design_confirmed__c, Contract__r.Contract_type__c, Contract__r.Fully_deposited__c, Contract__r.Discount_Amount__c, Contract__r.Terms_of_Payment__c, Contract__r.Terms_of_Sale__c, Contract__r.Total_surcharge__c FROM Contract_Product__c where Contract__r.Id = '{contract_id}' ORDER BY Line_Number__c ASC
+    SELECT Id, IsDeleted, Name, CreatedDate, LastModifiedDate, SystemModstamp, LastActivityDate, LastViewedDate, LastReferencedDate, Cont__c, Container_Weight_Regulations__c, Crates__c, Height__c, Length__c, Line_Number__c, Packing__c, Sales_Price__c, Tons__c, Width__c, List_Price__c, Discount__c, Charge_Unit__c, Quantity__c, m2__c, m3__c, ml__c, Total_Price_USD__c, L_PI__c, W_PI__c, H_PI__c, PCS_PI__c, Crates_PI__c, Created_Date__c, Packing_PI__c, Product_Discription__c, Charge_Unit_PI__c, Actual_Cont__c, Pending_Cont__c, Clear__c, Actual_Crates__c, Actual_m2__c, Actual_m3__c, Actual_ml__c, Actual_Quantity__c, Actual_Tons__c, Actual_Total_Price_USD__c, Pending_Crates__c, Pending_m2__c, Pending_m3__c, Pending_ml__c, Pending_Quantity__c, Pending_Tons__c, Pending_Amount_USD__c, Delivery_Date__c, Delivery_Quantity__c, Is_Delivery_Quantity_Valid__c, Delivery_Quantity_number__c, Unscheduled_Quantity__c, Line_number_For_print__c, Product__r.Id, Product__r.Name, Product__r.ProductCode, Product__r.Description, Product__r.QuantityScheduleType, Product__r.QuantityInstallmentPeriod, Product__r.NumberOfQuantityInstallments, Product__r.RevenueScheduleType, Product__r.RevenueInstallmentPeriod, Product__r.NumberOfRevenueInstallments, Product__r.IsActive, Product__r.CreatedDate, Product__r.CreatedById, Product__r.LastModifiedDate, Product__r.LastModifiedById, Product__r.SystemModstamp, Product__r.Family, Product__r.ExternalDataSourceId, Product__r.ExternalId, Product__r.DisplayUrl, Product__r.QuantityUnitOfMeasure, Product__r.IsDeleted, Product__r.IsArchived, Product__r.LastViewedDate, Product__r.LastReferencedDate, Product__r.StockKeepingUnit, Product__r.Product_description_in_Vietnamese__c, Product__r.specific_gravity__c, Product__r.Bottom_cladding_coefficient__c, Product__r.STONE_Color_Type__c, Product__r.Packing__c, Product__r.Long__c, Product__r.High__c, Product__r.Width__c, Product__r.Long_special__c, Product__r.High_special__c, Product__r.Image__c, Product__r.Charge_Unit__c, Product__r.Width_special__c, Product__r.STONE_Class__c, Product__r.Description__c, Product__r.List_Price__c, Product__r.Weight_per_unit__c, Product__r.Edge_Finish__c, Product__r.Suppliers__c, Product__r.m_per_unit__c, Product__r.Application__c, Product__r.Surface_Finish__c, Product__r.m3_per_unit__c, Product__r.Pricing_Method__c, Contract__r.Id, Contract__r.OwnerId, Contract__r.IsDeleted, Contract__r.Name, Contract__r.CreatedDate, Contract__r.CreatedById, Contract__r.LastModifiedDate, Contract__r.LastModifiedById, Contract__r.SystemModstamp, Contract__r.LastActivityDate, Contract__r.LastViewedDate, Contract__r.LastReferencedDate, Contract__r.Account__c, Contract__r.Quote__c, Contract__r.Bill_To__c, Contract__r.Bill_To_Name__c, Contract__r.Contact_Name__c, Contract__r.Expiration_Date__c, Contract__r.Export_Route_Carrier__c, Contract__r.Fax__c, Contract__r.Phone__c, Contract__r.Fumigation__c, Contract__r.Incoterms__c, Contract__r.In_words__c, Contract__r.Packing__c, Contract__r.Port_of_Discharge__c, Contract__r.REMARK_NUMBER_ON_DOCUMENTS__c, Contract__r.Shipping_Schedule__c, Contract__r.Total_Conts__c, Contract__r.Total_Crates__c, Contract__r.Total_m3__c, Contract__r.Sub_Total_USD__c, Contract__r.Total_Tons__c, Contract__r.Deposit_Percentage__c, Contract__r.Discount__c, Contract__r.Total_Price_USD__c, Contract__r.Deposit__c, Contract__r.Stage__c, Contract__r.Total_Payment_Received__c, Contract__r.Expected_ETD__c, Contract__r.Port_of_Origin__c, Contract__r.Price_Book__c, Contract__r.Stockyard__c, Contract__r.Created_Date__c, Contract__r.Total_Contract_Product__c, Contract__r.Pending_Products__c, Contract__r.Total_Payment_Received_USD__c, Contract__r.Production_Order_Number__c, Contract__r.Total_m2__c, Contract__r.Total_Pcs__c, Contract__r.Total_Pcs_PO__c, Contract__r.Planned_Shipments__c, Contract__r.Is_approved__c, Contract__r.Deposited_amount_USD__c, Contract__r.Design_confirmed__c, Contract__r.Contract_type__c, Contract__r.Fully_deposited__c, Contract__r.Discount_Amount__c, Contract__r.Terms_of_Payment__c,    Contract__r.Terms_of_Sale__c, Contract__r.Total_surcharge__c, Contract__r.Customer_PO_number__c FROM Contract_Product__c where Contract__r.Id = '{contract_id}' ORDER BY Line_Number__c ASC
     """
     
     try:
@@ -1868,6 +1868,7 @@ def generate_pi_no_discount_file(contract_id: str, template_path: str):
                 float_fields = [
                     "{{Contract__c.Total_Crates__c}}", "{{Contract__c.Total_m3__c}}",
                     "{{Contract__c.Total_Tons__c}}", "{{Contract__c.Total_Conts__c}}",
+                    "{{Contract__c.Total_m2__c}}",
                     "{{Contract__c.Sub_Total_USD__c\\# #,##0.##}}",
                     "{{Contract__c.Total_Price_USD__c\\# #,##0.##}}",
                     "{{Contract__c.Deposit__c\\# #,##0.##}}",
@@ -1881,13 +1882,42 @@ def generate_pi_no_discount_file(contract_id: str, template_path: str):
                         value = full_data.get(key_part)
                         if value is not None:
                             try:
-                                cell.value = float(value)
-                                cell.number_format = '#,##0.00'
+                                f_val = float(value)
+                                cell.value = f_val
+                                # Smart Formatting: Integer if whole number, else float with 2 decimal places
+                                if f_val.is_integer():
+                                    cell.number_format = '#,##0'
+                                else:
+                                    cell.number_format = '#,##0.00'
                                 is_float_field = True
                             except ValueError:
                                 pass
                         break
                 if is_float_field:
+                    continue
+
+                # Int Fields
+                int_fields = [
+                   "{{Contract__c.Total_Pcs__c}}",
+                   "{{Contract__c.Total_Pcs_PO__c}}",
+                   "{{Contract__c.Customer_PO_number__c}}"
+                ]
+                is_int_field = False
+                for field in int_fields:
+                    # STRICT check: Only convert to number if the cell contains JUST the placeholder
+                    if val and field == val.strip():
+                        key_part = field.replace("{{", "").replace("}}", "").split("\#")[0]
+                        value = full_data.get(key_part)
+                        if value is not None:
+                            try:
+                                cell.value = int(float(value))
+                                cell.number_format = '#,##0'
+                                is_int_field = True
+                            except ValueError:
+                                pass
+                        break
+                
+                if is_int_field:
                     continue
 
                 # General Replacement
@@ -1942,23 +1972,56 @@ def generate_pi_no_discount_file(contract_id: str, template_path: str):
                     merge_start_row = r
                     current_val = val
 
-        # Format Price Columns (L=12, M=13)
+        # Format Price Columns (L=12, M=13) and Packing (G=7)
         for i in range(len(contract_items)):
             row_idx = table_start_row + i
+            
+            # Column 14 (Packing): Custom Format "pcs/crates"
+            cell_packing = ws.cell(row=row_idx, column=14)
+            if cell_packing.value is not None:
+                try:
+                    # Ensure it is a number
+                    if isinstance(cell_packing.value, str):
+                        val_curr = float(str(cell_packing.value).replace(',', ''))
+                        cell_packing.value = int(val_curr) if val_curr.is_integer() else val_curr
+                    
+                    # Apply custom number format
+                    cell_packing.number_format = '#,##0 "pcs/crates"'
+                except ValueError:
+                    pass
+
             # Unit Price
             cell = ws.cell(row=row_idx, column=12)
-            if cell.value:
+            item = contract_items[i]
+            
+            # Use raw numeric value from record to ensure it's a number in Excel
+            val_raw = item.get('Sales_Price__c')
+            if val_raw is not None:
                 try:
-                    val_str = str(cell.value).replace(',', '')
-                    cell.value = float(val_str)
-                    cell.number_format = '#,##0.00 "USD"'
+                    cell.value = float(val_raw)
+
+                    # Determine Unit Suffix
+                    unit_raw = item.get('Charge_Unit_PI__c')
+                    
+                    if unit_raw:
+                        unit_clean = unit_raw.strip().upper()
+                        if "USD" in unit_clean:
+                           suffix = unit_clean
+                        else:
+                           suffix = f"USD/{unit_clean}"
+                    else:
+                        suffix = "USD"
+
+                    cell.number_format = f'#,##0.00 "{suffix}"'
                 except: pass
+            
             # Total Price
             cell = ws.cell(row=row_idx, column=13)
-            if cell.value:
+            # Use raw numeric value for total price too
+            total_raw = item.get('Total_Price_USD__c')
+            if total_raw is not None:
                 try:
-                    val_str = str(cell.value).replace(',', '')
-                    cell.value = float(val_str)
+                    cell.value = float(total_raw)
                     cell.number_format = '#,##0.00'
                 except: pass
 
