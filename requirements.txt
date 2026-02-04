@@ -3,3 +3,4 @@ fastapi[standard]
 python-dotenv
 openpyxl
 num2words
+groq
