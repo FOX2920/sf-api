@@ -5103,12 +5103,29 @@ def generate_case_report(case_id: str, template_path: str = "templates/case_temp
     
     print(f"Saving to: {file_path}")
     wb.save(str(file_path))
+
+    # Upload to Salesforce
+    print(f"Uploading to Salesforce for Case: {case_id}")
+    with open(file_path, "rb") as f:
+        file_data = f.read()
+    encoded = base64.b64encode(file_data).decode("utf-8")
+    
+    content_version = sf.ContentVersion.create({
+        "Title": file_name.rsplit(".", 1)[0],
+        "PathOnClient": file_name,
+        "VersionData": encoded,
+        "FirstPublishLocationId": case_id
+    })
     
     return {
         "status": "success",
         "file_path": str(file_path),
-        "message": "Report generated successfully"
+        "file_name": file_name,
+        "salesforce_content_version_id": content_version["id"],
+        "message": "Report generated and attached to Case successfully"
     }
+
+
 
 
 @app.get("/generate-case-report/{case_id}")
