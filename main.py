@@ -17,9 +17,11 @@ from openpyxl.cell.text import InlineFont
 from pathlib import Path
 
 import requests
+from groq import Groq
 
 # Load environment variables
 load_dotenv()
+groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
 app = FastAPI(title="Salesforce Packing List API")
 
@@ -1582,7 +1584,7 @@ def merge_identical_cells(ws, start_row, count, col_idx):
         ws.cell(row=start_merge_row, column=col_idx).alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
         adjust_row_height_for_merged_cell(ws, start_merge_row, last_row, col_idx, current_val)
 
-def adjust_row_height_for_merged_cell(ws, start_row, end_row, col_idx, text):
+def adjust_row_height_for_merged_cell(ws, start_row, end_row, col_idx, text, line_height_base=25):
     """
     Helper to adjust row height for merged cells.
     """
@@ -1601,7 +1603,7 @@ def adjust_row_height_for_merged_cell(ws, start_row, end_row, col_idx, text):
     estimated_lines = max(explicit_lines, wrap_lines)
     
     if estimated_lines > 1:
-        required_height = estimated_lines * 25
+        required_height = estimated_lines * line_height_base
     else:
         required_height = 30
     required_height += 10
@@ -1618,7 +1620,6 @@ def adjust_row_height_for_merged_cell(ws, start_row, end_row, col_idx, text):
             h = ws.row_dimensions[r].height
             if h is None: h = 15
             ws.row_dimensions[r].height = h + extra_per_row
-
 # --- Helper: Number to Words (English USD) ---
 def number_to_text(n):
     if n < 0:
@@ -4518,6 +4519,611 @@ async def sync_base_workflow(case_id: str = None):
                 "message": f"Base API Error: {resp.text}"
             }
 
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def expand_case_items_table(ws, template_row, n):
+    """Expand the case items table to accommodate n rows"""
+    max_col = ws.max_column
+    row_style = []
+    for col in range(1, max_col + 1):
+        cell = ws.cell(row=template_row, column=col)
+        row_style.append(style_copy(cell._style) if cell.has_style else None)
+    row_height = ws.row_dimensions[template_row].height
+    add_rows = max(0, n - 1)
+    
+    # Handle merged cells
+    merges_to_shift = []
+    for mr in ws.merged_cells.ranges:
+        if mr.min_row > template_row:
+            merges_to_shift.append((mr.min_row, mr.max_row, mr.min_col, mr.max_col))
+    
+    for mr in merges_to_shift:
+        rng = f"{get_column_letter(mr[2])}{mr[0]}:{get_column_letter(mr[3])}{mr[1]}"
+        ws.unmerge_cells(rng)
+    
+    # Insert rows
+    if add_rows > 0:
+        ws.insert_rows(template_row + 1, amount=add_rows)
+        for offset in range(1, add_rows + 1):
+            r = template_row + offset
+            for col in range(1, max_col + 1):
+                dst = ws.cell(row=r, column=col)
+                dst.value = None
+                st = row_style[col - 1]
+                if st is not None:
+                    dst._style = style_copy(st)
+            if row_height is not None:
+                ws.row_dimensions[r].height = row_height
+    
+    # Re-merge shifted cells
+    for mr in merges_to_shift:
+        new_min_row = mr[0] + add_rows
+        new_max_row = mr[1] + add_rows
+        rng = f"{get_column_letter(mr[2])}{new_min_row}:{get_column_letter(mr[3])}{new_max_row}"
+        ws.merge_cells(rng)
+
+
+def generate_case_report(case_id: str, template_path: str):
+    """Generate complaint case report"""
+    sf = get_salesforce_connection()
+    
+    # 1. Get Case Data
+    case_query = f"""
+        SELECT
+            Id, CaseNumber, Subject, CreatedDate,
+            So_LSX__c, Date_Export__c, Link_BM02__c,
+            Number_Container__c, Customer_Complain_Content__c,
+            Account.Account_Code__c
+        FROM Case
+        WHERE Id = '{case_id}'
+    """
+    case_res = sf.query(case_query)
+    if case_res['totalSize'] == 0:
+        raise ValueError(f"Case not found: {case_id}")
+    case_data = case_res['records'][0]
+    
+    # 2. Find Contract ID using So_LSX__c
+    lsx_number = case_data.get('So_LSX__c')
+    contract_id = None
+    if lsx_number:
+        contract_query = f"""
+            SELECT Id 
+            FROM Contract__c 
+            WHERE Production_Order_Number__c = '{lsx_number}' 
+            LIMIT 1
+        """
+        contract_res = sf.query(contract_query)
+        if contract_res['totalSize'] > 0:
+            contract_id = contract_res['records'][0]['Id']
+    
+    # 3. Get Products if Contract found
+    products = []
+    if contract_id:
+        products_query = f"""
+            SELECT Id, Name, 
+                   Length__c, Width__c, Height__c, 
+                   Vietnamese_Description__c, 
+                   Line_number__c 
+            FROM Order_Product__c 
+            WHERE Contract_PI__r.Id = '{contract_id}' 
+            ORDER BY Line_number__c ASC
+        """
+        prod_res = sf.query_all(products_query)
+        products = prod_res['records']
+        
+    # 4. Load Template
+    wb = openpyxl.load_workbook(template_path)
+    ws = wb.active # Assuming the template has only 1 sheet or active one is correct
+    
+    # helper for dates
+    def fmt_date(d_str):
+        if not d_str: return ""
+        # Salesforce returns YYYY-MM-DDT... or YYYY-MM-DD
+        return d_str.split('T')[0]
+
+    # helper for dates
+    def fmt_date(d_str):
+        if not d_str: return ""
+        # Salesforce returns YYYY-MM-DDT... or YYYY-MM-DD
+        return d_str.split('T')[0]
+
+    def html_to_richtext(content, base_font=None):
+        if not content:
+            return ""
+        
+        # Normalize newlines
+        # Replace <p> with nothing (start) and </p> with \n (end)
+        # Replace <br> with \n
+        c = str(content)
+        c = c.replace('<p>', '').replace('</p>', '\n')
+        c = re.sub(r'<br\s*/?>', '\n', c, flags=re.IGNORECASE)
+        
+        # Split by bold tags
+        # Capture <b>...</b> or <strong>...</strong>
+        # Note: minimal regex, won't handle nested tags well but sufficient for basic Salesforce rich text
+        parts = re.split(r'(<(?:b|strong)>.*?</(?:b|strong)>)', c, flags=re.IGNORECASE | re.DOTALL)
+        
+        rich_text = CellRichText()
+        
+        # Base font properties
+        font_name = base_font.name if base_font else 'Calibri'
+        font_size = base_font.sz if base_font else 11
+        font_color = base_font.color if base_font else None
+        
+        normal_font = InlineFont(rFont=font_name, sz=font_size, color=font_color)
+        bold_font = InlineFont(rFont=font_name, sz=font_size, color=font_color, b=True)
+        
+        for part in parts:
+            if not part:
+                continue
+                
+            # Check if bold
+            bold_match = re.match(r'<(?:b|strong)>(.*?)</(?:b|strong)>', part, flags=re.IGNORECASE | re.DOTALL)
+            if bold_match:
+                text_content = bold_match.group(1)
+                # Decode entities
+                text_content = text_content.replace('&nbsp;', ' ').replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"')
+                rich_text.append(TextBlock(bold_font, text_content))
+            else:
+                # Normal text
+                text_content = part
+                # Strip HTML tags that might remain (like <div> etc if any, or just clean entities)
+                text_content = re.sub(r'<[^>]+>', '', text_content)
+                text_content = text_content.replace('&nbsp;', ' ').replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"')
+                rich_text.append(TextBlock(normal_font, text_content))
+                
+        # Trim trailing newlines from the last block if possible, or just string result
+        # CellRichText doesn't support strip, so we rely on the split logic.
+        return rich_text
+
+    # 5. Scalar Replacements
+    account = case_data.get('Account') or {}
+    replacements = {
+        '{{Account.Account_Code__c}}': account.get('Account_Code__c') or '',
+        '{{Subject}}': case_data.get('Subject') or '',
+        '{{CreatedDate}}': fmt_date(case_data.get('CreatedDate')),
+        '{{So_LSX__c}}': case_data.get('So_LSX__c') or '',
+        '{{Date_Export__c}}': fmt_date(case_data.get('Date_Export__c')),
+        '{{Number_Container__c}}': case_data.get('Number_Container__c') or '',
+        # Skip Customer_Complain_Content__c here to handle it separately
+        '{{Customer_Complain_Content__c}}': '', 
+    }
+    
+    for row in ws.iter_rows():
+        for cell in row:
+            if isinstance(cell.value, str):
+                # Handle special RichText field
+                if '{{Customer_Complain_Content__c}}' in cell.value:
+                     # Get current font to preserve size/family
+                     base_font = cell.font
+                     richtext_val = html_to_richtext(case_data.get('Customer_Complain_Content__c'), base_font)
+                     cell.value = richtext_val
+                     cell.alignment = Alignment(wrap_text=True, vertical='top') # Ensure wrap
+                     
+                     # Approximate row height adjustment
+                     # 1 line ~ 15 points. 
+                     # Estimate lines based on text length and column width (approx 100 chars per line for wide merged cells)
+                     # Better: count actual newlines + wrap
+                     text_val = str(richtext_val).replace('\r', '') # richtext str conversion might be simple text
+                     
+                     # Simple estimation:
+                     # Split by format-forced newlines
+                     # Also estimate wrapping for long lines (e.g. > 100 chars)
+                     lines = text_val.split('\n')
+                     total_lines = 0
+                     estimated_chars_per_line = 90 # Adjust based on column width in template
+                     
+                     for line in lines:
+                        if len(line) > estimated_chars_per_line:
+                            total_lines += (len(line) // estimated_chars_per_line) + 1
+                        else:
+                            total_lines += 1
+                     
+                     # Set height (minimum 15, add buffer)
+                     new_height = max(1, total_lines) * 21 + 15 
+                     ws.row_dimensions[cell.row].height = new_height
+                     
+                     continue
+
+                for placeholder, value in replacements.items():
+                    cell.value = cell.value.replace(placeholder, str(value))
+    
+    # Adjust height for "Supply Department Response" section (empty rows)
+    # Finding rows under "PHẢN HỒI TỪ BỘ PHẬN CUNG ỨNG"
+    # User feedback: "kéo rộng ra" -> likely means make rows taller.
+    
+    supply_header_row = None
+    for row in ws.iter_rows():
+        for cell in row:
+            if isinstance(cell.value, str) and "PHẢN HỒI TỪ BỘ PHẬN CUNG ỨNG" in cell.value:
+                supply_header_row = cell.row
+                break
+        if supply_header_row:
+            break
+            
+    if supply_header_row:
+        # Expand next 3 rows (Nội dung, Nguyên Nhân, Kết luận)
+        # Typically these are the next 3 rows.
+        for i in range(1, 4):
+            target_row = supply_header_row + i
+            if target_row <= ws.max_row:
+                ws.row_dimensions[target_row].height = 60 # Set to ~4 lines height
+
+    
+    # 6. Table Expansion for Products
+    # Find table start
+    table_start_row = None
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=10):
+        for cell in row:
+            if isinstance(cell.value, str) and '{{TableStart:ProPlanProduct}}' in cell.value:
+                table_start_row = cell.row
+                break
+        if table_start_row:
+            break
+            
+    if table_start_row:
+        # Expand
+        expand_case_items_table(ws, table_start_row, len(products) if products else 1)
+        
+        # Fill data
+        for idx, item in enumerate(products):
+            r = table_start_row + idx
+            
+            # Map columns
+            # Column A (1): STT 
+            # Column B (2): Description
+            # Column C (3): Length
+            # Column D (4): Width
+            # Column E (5): Height
+            
+            # STT
+            line_no = item.get('Line_number__c') 
+            if line_no:
+                try:
+                    val_stt = int(float(line_no))
+                except:
+                    val_stt = idx + 1
+            else:
+                val_stt = idx + 1
+            
+            ws.cell(r, 1).value = val_stt
+            
+            # Description
+            ws.cell(r, 2).value = item.get('Vietnamese_Description__c')
+            
+            # Helper to format decimals
+            def fmt_dim(val):
+                if val is None: return ""
+                try:
+                    v = float(val)
+                    return f"{v:g}" # removes trailing zeros
+                except:
+                    return str(val)
+
+            ws.cell(r, 3).value = fmt_dim(item.get('Length__c'))
+            ws.cell(r, 4).value = fmt_dim(item.get('Width__c'))
+            ws.cell(r, 5).value = fmt_dim(item.get('Height__c'))
+            
+    # Clean up markers
+    for row in ws.iter_rows():
+        for cell in row:
+            if isinstance(cell.value, str):
+                if '{{TableStart:ProPlanProduct}}' in cell.value:
+                    cell.value = cell.value.replace('{{TableStart:ProPlanProduct}}', '')
+                if '{{TableEnd:ProPlanProduct}}' in cell.value:
+                    cell.value = cell.value.replace('{{TableEnd:ProPlanProduct}}', '')
+                if '{{Line_number__c}}' in cell.value:
+                     cell.value = cell.value.replace('{{Line_number__c}}', '')
+
+    # Save
+    now = datetime.datetime.now()
+    timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
+    sanitized_case_number = sanitize_filename(case_data.get('CaseNumber', 'Case'))
+    file_name = f"Case_Report_{sanitized_case_number}_{timestamp}.xlsx"
+    
+    output_dir = get_output_directory()
+    file_path = output_dir / file_name
+    wb.save(str(file_path))
+    
+    # Upload to Salesforce
+    with open(file_path, "rb") as f:
+        data = f.read()
+    encoded = base64.b64encode(data).decode("utf-8")
+    
+    try:
+        content_version = sf.ContentVersion.create({
+            "Title": file_name.rsplit(".", 1)[0],
+            "PathOnClient": file_name,
+            "VersionData": encoded,
+            "FirstPublishLocationId": case_id
+        })
+        cv_id = content_version['id']
+    except Exception as e:
+        print(f"Failed to upload to Salesforce: {e}")
+        cv_id = None
+
+    return {
+        "file_path": str(file_path),
+        "file_name": file_name,
+        "salesforce_content_version_id": cv_id
+    }
+
+
+
+
+
+
+
+
+
+# --- Case Report Generation ---
+
+def summarize_complaint_with_ai(complaint_text):
+    """
+    Summarize complaint text using Groq AI.
+    Logic referenced from code.py
+    """
+    if not complaint_text or len(str(complaint_text).strip()) < 5:
+        return "N/A"
+
+    system_prompt = """
+    Bạn là chuyên viên tóm tắt lỗi kỹ thuật. 
+    Nhiệm vụ: Đọc khiếu nại và tóm tắt ngắn gọn lỗi sản phẩm thực tế.
+    
+    Quy tắc quan trọng:
+    1. BỎ QUA hoàn toàn các đoạn về: dọa nạt, cảm xúc tức giận, yêu cầu bồi thường tiền, quy trình giấy tờ.
+    2. CHỈ LẤY thông tin mô tả hiện trạng lỗi (mối mọt, gãy vỡ, sai kích thước) và bằng chứng cụ thể (số lượng).
+    3. Output phải là một câu tiếng Việt ngắn gọn, trực diện.
+
+    Ví dụ:
+    Input: "Container MEDU6271240 bị côn trùng (tìm thấy một con bọ và bụi khoan trên 4 kiện gỗ). Khách hàng nhấn mạnh đây không còn là sự trùng hợp. Yêu cầu bồi thường chi phí dỡ hàng."
+    Output: "Các thùng gỗ xuất hiện côn trùng, mối mọt. Tìm thấy một con bọ và bụi khoan trên 4 kiện gỗ."
+    """
+
+    try:
+        completion = groq_client.chat.completions.create(
+            model="openai/gpt-oss-20b", 
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": str(complaint_text)}
+            ],
+            temperature=0.2, 
+        )
+        return completion.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"AI Summary Error: {e}")
+        return f"N/A (AI Error)"
+
+def html_to_richtext(html_str, base_font=None):
+    """
+    Convert HTML to OpenPyXL CellRichText.
+    Supports <br>, <p>, </div> for newlines.
+    Supports <b>, <strong> for bold.
+    """
+    if not html_str: return ""
+    text = str(html_str)
+    
+    # Normalize Newlines
+    text = re.sub(r'(?i)<br\s*/?>', '\n', text)
+    text = re.sub(r'(?i)</p>', '\n', text)
+    text = re.sub(r'(?i)</div>', '\n', text)
+    
+    # Strip unsupported tags
+    text = re.sub(r'<[^>]+>', '', text)
+    
+    # Fix multiple newlines
+    text = re.sub(r'\n+', '\n', text).strip()
+    return text
+
+def generate_case_report(case_id: str, template_path: str = "templates/case_template.xlsx"):
+    print(f"--- Generating Case Report for Case ID: {case_id} ---")
+    
+    sf = get_salesforce_connection()
+    
+    # Query Case
+    query = f"""
+        SELECT 
+            Id, CaseNumber, Subject, CreatedDate, 
+            So_LSX__c, Date_Export__c, Link_BM02__c, 
+            Number_Container__c, Customer_Complain_Content__c,
+            Account.Name, Account.Account_Code__c
+        FROM Case 
+        WHERE Id = '{case_id}'
+        LIMIT 1
+    """
+    
+    try:
+        result = sf.query_all(query)
+    except Exception as e:
+        raise Exception(f"Error querying Case: {e}")
+        
+    if not result['records']:
+        raise Exception(f"Case with ID {case_id} not found.")
+        
+    case_data = result['records'][0]
+    lsx_number = case_data.get('So_LSX__c')
+
+    # Query Contract & Products
+    products_data = []
+    if lsx_number:
+        print(f"Found LSX: {lsx_number}, searching for Contract...")
+        try:
+             contract_query = f"SELECT Id FROM Contract__c WHERE Production_Order_Number__c = '{lsx_number}' LIMIT 1"
+             contract_res = sf.query(contract_query)
+             if contract_res['totalSize'] > 0:
+                 contract_id = contract_res['records'][0]['Id']
+                 
+                 prod_query = f"""
+                    SELECT Id, Name, Length__c, Width__c, Height__c, 
+                           Vietnamese_Description__c, Line_number__c 
+                    FROM Order_Product__c 
+                    WHERE Contract_PI__r.Id = '{contract_id}' 
+                    ORDER BY Line_number__c ASC
+                 """
+                 records = sf.query_all(prod_query)['records']
+                 
+                 for i, item in enumerate(records):
+                     products_data.append({
+                         "Line_number__c": i + 1,
+                         "Vietnamese_Description__c": item.get('Vietnamese_Description__c'),
+                         "Length": item.get('Length__c'),
+                         "Width": item.get('Width__c'),
+                         "Height": item.get('Height__c')
+                     })
+        except Exception as e:
+            print(f"Error querying Contract/Products: {e}")
+
+    # Load Template
+    print(f"Loading template: {template_path}")
+    if not os.path.exists(template_path):
+         if os.path.exists(os.path.basename(template_path)):
+             template_path = os.path.basename(template_path)
+         else:
+             raise FileNotFoundError(f"Template not found: {template_path}")
+             
+    wb = openpyxl.load_workbook(template_path)
+    ws = wb.active
+    
+    # Sanitize Template
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.value and isinstance(cell.value, str) and "{{" in cell.value:
+                if '\n' in cell.value:
+                     cell.value = cell.value.replace('\n', '')
+
+    # AI Summary Logic
+    raw_complaint = case_data.get('Customer_Complain_Content__c') or ""
+    clean_complaint_text = html_to_richtext(raw_complaint)
+    print("Calling AI for summary...")
+    ai_summary = summarize_complaint_with_ai(clean_complaint_text)
+
+    # Prepare Data
+    data_map = {
+        "{{CaseNumber}}": case_data.get('CaseNumber', ''),
+        "{{Subject}}": case_data.get('Subject', ''),
+        "{{Account.Account_Code__c}}": case_data.get('Account', {}).get('Account_Code__c') or "",
+        "{{Account_Name}}": case_data.get('Account', {}).get('Name') or "",
+        "{{CreatedDate}}": case_data.get('CreatedDate', '').split('.')[0],
+        "{{So_LSX__c}}": case_data.get('So_LSX__c', ''),
+        "{{Date_Export__c}}": case_data.get('Date_Export__c', ''),
+        "{{Link_BM02}}": case_data.get('Link_BM02__c', ''),
+        "{{Number_Container__c}}": case_data.get('Number_Container__c', ''),
+        "{{summary}}": ai_summary
+    }
+    
+    # Formatting Dates
+    try:
+        if data_map["{{CreatedDate}}"]:
+            dt = datetime.datetime.strptime(data_map["{{CreatedDate}}"], "%Y-%m-%dT%H:%M:%S")
+            data_map["{{CreatedDate}}"] = dt.strftime("%d/%m/%Y")
+        if data_map["{{Date_Export__c}}"]:
+            dt = datetime.datetime.strptime(data_map["{{Date_Export__c}}"], "%Y-%m-%d")
+            data_map["{{Date_Export__c}}"] = dt.strftime("%d/%m/%Y")
+    except: pass
+
+    # Fill Table
+    table_start_row = expand_table_by_tag(ws, "{{TableStart:ProPlanProduct}}", "{{TableEnd:ProPlanProduct}}", products_data)
+    
+    # Merging Logic for Product Table
+    if table_start_row and products_data:
+        num_products = len(products_data)
+        for i in range(num_products):
+            row_idx = table_start_row + i
+            ws.merge_cells(start_row=row_idx, start_column=6, end_row=row_idx, end_column=8)
+            
+        if num_products > 1:
+            ws.merge_cells(start_row=table_start_row, start_column=9, 
+                           end_row=table_start_row + num_products - 1, end_column=9)
+            ws.cell(row=table_start_row, column=9).alignment = Alignment(horizontal='center', vertical='center')
+
+    # Fill Placeholders
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.value and isinstance(cell.value, str):
+                val = cell.value
+                
+                # Feedback Section Fixed Height
+                val_lower = val.lower()
+                if ("nội dung:" in val_lower or "nguyên nhân:" in val_lower or "kết luận và hướng xử lý:" in val_lower):
+                     # Check if entire row has summary placeholder to avoid resizing Row 8
+                     row_has_summary = any("{{summary}}" in str(c.value).lower() for c in ws[cell.row] if c.value)
+                     if not row_has_summary:
+                         ws.row_dimensions[cell.row].height = 100
+    
+                # SPECIAL: Customer Complain Content
+                if "{{Customer_Complain_Content__c}}" in val:
+                    raw_html = case_data.get('Customer_Complain_Content__c', '')
+                    
+                    if val.strip() == "{{Customer_Complain_Content__c}}":
+                         clean_text = html_to_richtext(raw_html)
+                         cell.value = clean_text
+                         cell.alignment = Alignment(wrap_text=True, vertical='top')
+                         
+                         text_val = str(clean_text)
+                         newlines = text_val.count('\n') + 1
+                         estimated_lines = newlines
+                         
+                         wrapped_lines = sum(1 for line in text_val.split('\n') if len(line) > 90)
+                         estimated_lines += wrapped_lines
+                         
+                         new_height = max(1, estimated_lines) * 21 + 15
+                         ws.row_dimensions[cell.row].height = new_height
+                    else:
+                         try:
+                             clean_text = html_to_richtext(raw_html)
+                             cell.value = val.replace("{{Customer_Complain_Content__c}}", str(clean_text))
+                         except:
+                             cell.value = val.replace("{{Customer_Complain_Content__c}}", "")
+                    continue
+                
+                # SPECIAL: AI Summary
+                if "{{summary}}" in val:
+                    new_val = val.replace("{{summary}}", ai_summary)
+                    cell.value = new_val
+                    cell.alignment = Alignment(wrap_text=True, vertical='top')
+                    continue
+
+                # Generic Replacement
+                for key, value in data_map.items():
+                    if key in val:
+                        new_val = val.replace(key, str(value) if value else "")
+                        val = new_val 
+                        cell.value = new_val
+                        
+    # Save File
+    output_dir = get_output_directory()
+    os.makedirs(output_dir, exist_ok=True)
+    
+    safe_case_number = sanitize_filename(case_data.get('CaseNumber', 'Unknown'))
+    fn_ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    file_name = f"Case_{safe_case_number}_{fn_ts}.xlsx"
+    file_path = output_dir / file_name
+    
+    print(f"Saving to: {file_path}")
+    wb.save(str(file_path))
+    
+    return {
+        "status": "success",
+        "file_path": str(file_path),
+        "message": "Report generated successfully"
+    }
+
+
+@app.get("/generate-case-report/{case_id}")
+async def generate_case_report_endpoint(case_id: str):
+    """Generate Excel report for a Case"""
+    try:
+        template_path = os.getenv('CASE_TEMPLATE_PATH', 'templates/case_template.xlsx')
+        if not os.path.exists(template_path):
+             raise HTTPException(status_code=404, detail=f"Template not found: {template_path}")
+             
+        result = generate_case_report(case_id, template_path)
+        return {
+            "status": "success",
+            "data": result
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
