@@ -14,6 +14,7 @@ import re
 from openpyxl.styles import Alignment, Border, Side, Font
 from openpyxl.cell.rich_text import CellRichText, TextBlock
 from openpyxl.cell.text import InlineFont
+from openpyxl.drawing.image import Image as OpenpyxlImage
 from pathlib import Path
 
 import requests
@@ -5038,6 +5039,74 @@ def generate_case_report(case_id: str, template_path: str = "templates/case_temp
                            end_row=table_start_row + num_products - 1, end_column=9)
             ws.cell(row=table_start_row, column=9).alignment = Alignment(horizontal='center', vertical='center')
 
+        # --- PHOTO INTEGRATION (WITH STACKING FIX) ---
+        try:
+            print(f"Fetching photos for Case {case_id}...")
+            cdl_query = f"SELECT ContentDocumentId FROM ContentDocumentLink WHERE LinkedEntityId = '{case_id}'"
+            cdl_res = sf.query_all(cdl_query)
+            doc_ids = [r['ContentDocumentId'] for r in cdl_res['records']]
+            
+            if doc_ids:
+                ids_str = "','".join(doc_ids)
+                cv_query = f"""
+                    SELECT Id, Title, FileExtension, VersionData 
+                    FROM ContentVersion 
+                    WHERE ContentDocumentId IN ('{ids_str}') 
+                    AND IsLatest = true 
+                    AND FileExtension IN ('jpg','jpeg','png','gif') 
+                    ORDER BY CreatedDate ASC 
+                    LIMIT 5
+                """
+                cv_res = sf.query_all(cv_query)
+                images = cv_res['records']
+                
+                if images:
+                    from io import BytesIO
+                    import requests
+                    
+                    col_letter = get_column_letter(9)
+                    
+                    # Fix overlap by anchoring to different rows and increasing row heights
+                    # We'll set a standard height for rows that contain photos
+                    photo_row_height = 150 # Points
+                    
+                    for idx, img_data in enumerate(images):
+                        # Anchor to table_start_row + idx
+                        # If idx exceeds num_products, it might go beyond the merged area but still stay in column 9
+                        target_row_idx = table_start_row + idx
+                        
+                        cv_id = img_data['Id']
+                        img_url = f"{sf.base_url}sobjects/ContentVersion/{cv_id}/VersionData"
+                        headers = {'Authorization': f'Bearer {sf.session_id}'}
+                        
+                        img_res = requests.get(img_url, headers=headers)
+                        if img_res.status_code == 200:
+                            img_stream = BytesIO(img_res.content)
+                            try:
+                                pil_img = OpenpyxlImage(img_stream)
+                                
+                                # Scale to fit width (~200 pixels)
+                                original_w, original_h = pil_img.width, pil_img.height
+                                target_w = 180 
+                                scale = target_w / original_w
+                                pil_img.width = target_w
+                                pil_img.height = int(original_h * scale)
+                                
+                                # Anchor and add
+                                anchor_cell = f"{col_letter}{target_row_idx}"
+                                ws.add_image(pil_img, anchor_cell)
+                                
+                                # Set row height to fit the image
+                                current_h = ws.row_dimensions[target_row_idx].height or 15
+                                ws.row_dimensions[target_row_idx].height = max(current_h, pil_img.height * 0.75 + 10) # pixels to points approx
+                                
+                            except Exception as e:
+                                print(f"Error processing image {cv_id}: {e}")
+            else:
+                print("No attached files found for this Case.")
+        except Exception as e:
+            print(f"Error in Photo Integration: {e}")
+
     # Fill Placeholders
     for row in ws.iter_rows():
         for cell in row:
@@ -5124,6 +5193,10 @@ def generate_case_report(case_id: str, template_path: str = "templates/case_temp
         "salesforce_content_version_id": content_version["id"],
         "message": "Report generated and attached to Case successfully"
     }
+
+
+
+
 
 
 
