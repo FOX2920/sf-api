@@ -18,7 +18,8 @@ import requests
 import os
 import datetime # existing import is just 'import datetime', user snippet uses 'from datetime import datetime' but we can adapt or just import what's needed.
 # existing imports...
-
+from num2words import num2words
+from groq import Groq
 # Load environment variables
 load_dotenv()
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
