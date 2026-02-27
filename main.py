@@ -8,8 +8,8 @@ from copy import copy as style_copy
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Alignment, Font, Border, Side
 from openpyxl.drawing.image import Image as OpenpyxlImage
-from openpyxl.cell.rich_text import CellRichText, TextBlock
-from openpyxl.styles.fonts import InlineFont
+from openpyxl.cell.rich_text import CellRichText, TextBlock, InlineFont
+# from openpyxl.styles.fonts import InlineFont
 from pathlib import Path
 import base64
 import datetime
@@ -2077,7 +2077,7 @@ def generate_pi_no_discount_file(contract_id: str, template_path: str):
                 for field in int_fields:
                     # STRICT check: Only convert to number if the cell contains JUST the placeholder
                     if val and field == val.strip():
-                        key_part = field.replace("{{", "").replace("}}", "").split("\#")[0]
+                        key_part = field.replace("{{", "").replace("}}", "").split(r"\#")[0]
                         value = full_data.get(key_part)
                         if value is not None:
                             try:
