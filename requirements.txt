@@ -5,3 +5,4 @@ openpyxl
 num2words
 groq
 requests
+Pillow
