@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -7,21 +6,25 @@ from dotenv import load_dotenv
 import openpyxl
 from copy import copy as style_copy
 from openpyxl.utils import get_column_letter
+from openpyxl.styles import Alignment, Font, Border, Side
+from openpyxl.drawing.image import Image as OpenpyxlImage
+from openpyxl.cell.rich_text import CellRichText, TextBlock
+from openpyxl.styles.fonts import InlineFont
+from pathlib import Path
 import base64
 import datetime
 import os
 import json
 import html
 import io
-import re # re is already imported but consistent with request
+import re
 import requests
-import os
-import datetime # existing import is just 'import datetime', user snippet uses 'from datetime import datetime' but we can adapt or just import what's needed.
-# existing imports...
 from num2words import num2words
 from groq import Groq
+
 # Load environment variables
 load_dotenv()
+
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
 # ================= CẤU HÌNH BASE.VN =================
