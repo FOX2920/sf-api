@@ -1,7 +1,7 @@
-simple-salesforce
+openpyxl>=3.1.0
 fastapi[standard]
 python-dotenv
-openpyxl
+simple-salesforce
 num2words
 groq
 requests
